@@ -102,13 +102,13 @@ if not df.empty:
                     st.toast("⚠️ 글로벌 지도 엔진 한계로 상세 지번을 찾지 못했습니다. 번지수를 빼고 검색해 보세요.")
             except: pass
 
-        # 💡 지도 생성 (기본값을 일반지도로 설정하여 시작)
-        m = folium.Map(location=[lat, lon], zoom_start=13)
+        # 💡 [핵심 수정] tiles=None을 주어 기본 지도를 아예 비우고 도화지만 준비합니다.
+        m = folium.Map(location=[lat, lon], zoom_start=13, tiles=None)
         
-        # 1. 일반지도 레이어 추가 (OpenStreetMap)
+        # 1. 일반지도 (OpenStreetMap) 추가
         folium.TileLayer('OpenStreetMap', name='🗺️ 일반지도').add_to(m)
         
-        # 2. 위성지도 레이어 추가 (Google Satellite)
+        # 2. 위성지도 (Google Satellite) 추가
         folium.TileLayer(
             tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', 
             attr='Google Satellite', 
@@ -116,7 +116,7 @@ if not df.empty:
             overlay=False
         ).add_to(m)
         
-        # 구획 테두리 표시 (최대한 비슷한 지역 매칭)
+        # 행정구역 테두리 그리기
         dong_poly = get_dong_polygon(selected_sido, info['시/구/군'], info['DL명(읍면동)'], get_korea_geojson())
         if dong_poly: folium.GeoJson(dong_poly, style_function=lambda x: {'fillColor': '#FFFF00', 'color': '#FF0000', 'weight': 3, 'fillOpacity': 0.25}).add_to(m)
         elif nom_geo and nom_geo.get('type') in ['Polygon', 'MultiPolygon']: folium.GeoJson(nom_geo, style_function=lambda x: {'fillColor': '#00FFFF', 'color': '#0000FF', 'weight': 3, 'fillOpacity': 0.25}).add_to(m)
@@ -129,10 +129,10 @@ if not df.empty:
             folium.Marker([user_lat, user_lon], popup=f"{search_addr} (권역 용량: {info['DL 여유용량']} MW)", icon=folium.Icon(color='red', icon='star')).add_to(m)
             m.fit_bounds([[lat, lon], [user_lat, user_lon]])
         
-        # 💡 레이어 컨트롤 활성화 (우측 상단 겹친 종이 아이콘)
+        # 💡 모든 요소를 다 그린 후, 마지막에 레이어 컨트롤 활성화!
         folium.LayerControl(position='topright').add_to(m)
         
-        # 브라우저 충돌 방지 키값 부여
+        # 브라우저 렌더링 충돌 방지 키
         map_key = f"map_{selected_sido}_{selected_sigg}_{sel_dong}_{search_addr}"
         st_folium(m, width=1200, height=600, returned_objects=[], key=map_key)
 else: st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크롤러를 1회 실행하여 구글 시트를 업데이트해 주세요.")
