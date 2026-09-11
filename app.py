@@ -82,12 +82,12 @@ if not df.empty:
     dong_list = [d for d in target_df['고유DL명'].dropna().unique().tolist() if str(d).strip()]
     if dong_list:
         col3, col4 = st.columns(2)
-        with col3: sel_dong = st.selectbox("🎯 3. 지도에서 확인할 읍/면/동 선택", dong_list)
-        with col4: search_addr = st.text_input("🔍 근처 주소/지역 검색 (선택)", placeholder="예: 예천군 호명읍")
+        with col3: sel_dong = st.selectbox("🎯 3. 지도에서 확인할 배전선로(읍/면/동) 선택", dong_list)
+        with col4: search_addr = st.text_input("🔍 내 땅 지번 검색 (선택)", placeholder="예: 예천군 호명읍 산합리 1123")
 
         info = target_df[target_df['고유DL명'] == sel_dong].iloc[0]
-        if info['연계가능여부']: st.success(f"✅ [{info['DL명(읍면동)']}] 지역은 상위 계통 여유가 충분합니다.")
-        else: st.error(f"⚠️ [{info['DL명(읍면동)']}] 배전선로 여유는 있으나 상위 계통 용량이 부족합니다.")
+        if info['연계가능여부']: st.success(f"✅ [{info['DL명(읍면동)']}] 권역 내의 지번은 상위 계통 여유가 충분합니다.")
+        else: st.error(f"⚠️ [{info['DL명(읍면동)']}] 권역 내의 지번은 배전선로 여유는 있으나 상위 계통 용량이 부족합니다.")
         
         search_target = info['DL명(읍면동)'] + ("동" if not any(info['DL명(읍면동)'].endswith(s) for s in ['동', '읍', '면', '리']) else "")
         lat, lon, nom_geo = get_location_data(f"{selected_sido} {info['시/구/군']} {search_target}", f"{selected_sido} {info['시/구/군']}")
@@ -96,10 +96,13 @@ if not df.empty:
         if search_addr.strip():
             try:
                 user_loc = Nominatim(user_agent="kepco_app_hwang").geocode(search_addr)
-                if user_loc: user_lat, user_lon = user_loc.latitude, user_loc.longitude
+                if user_loc: 
+                    user_lat, user_lon = user_loc.latitude, user_loc.longitude
+                else:
+                    st.toast("⚠️ 글로벌 지도 엔진 한계로 상세 지번을 찾지 못했습니다. 번지수를 빼고 검색해 보세요.")
             except: pass
 
-        m = folium.Map(location=[lat, lon], zoom_start=12)
+        m = folium.Map(location=[lat, lon], zoom_start=13)
         folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='위성지도', overlay=False).add_to(m)
         
         dong_poly = get_dong_polygon(selected_sido, info['시/구/군'], info['DL명(읍면동)'], get_korea_geojson())
@@ -108,9 +111,9 @@ if not df.empty:
             
         folium.Marker([lat, lon], popup=f"{info['DL명(읍면동)']}<br>DL 여유: {info['DL 여유용량']} MW").add_to(m)
         if user_lat and user_lon:
-            folium.Marker([user_lat, user_lon], popup=search_addr, icon=folium.Icon(color='red', icon='star')).add_to(m)
+            folium.Marker([user_lat, user_lon], popup=f"{search_addr} (권역 용량: {info['DL 여유용량']} MW)", icon=folium.Icon(color='red', icon='star')).add_to(m)
             m.fit_bounds([[lat, lon], [user_lat, user_lon]])
         
         map_key = f"map_{selected_sido}_{selected_sigg}_{sel_dong}_{search_addr}"
         st_folium(m, width=1200, height=600, returned_objects=[], key=map_key)
-else: st.warning("데이터를 불러오지 못했습니다. 구글 스프레드시트 업데이트 상태를 확인해 주세요.")
+else: st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크롤러를 1회 실행하여 구글 시트를 업데이트해 주세요.")
