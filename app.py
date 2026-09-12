@@ -38,6 +38,30 @@ def get_dong_polygon(sido, sigg, dl_name, geojson_data):
                 break
     return {"type": "FeatureCollection", "features": matched} if matched else None
 
+def search_realtime_api(address):
+    # 한전 API 가이드에 맞춘 주소 분해 및 다이렉트 호출 함수
+    api_key = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
+    url = "https://bigdata.kepco.co.kr/openapi/v1/dispersedGeneration.do"
+    parts = address.split()
+    lidong, li, jibun = "", "", ""
+    for p in parts:
+        if p.endswith(('읍', '면', '동')): lidong = p
+        elif p.endswith('리'): li = p
+        elif any(c.isdigit() for c in p): jibun = p
+    
+    if not jibun: return None
+    
+    params = {"apiKey": api_key, "returnType": "json"}
+    if lidong: params["addrLidong"] = lidong
+    if li: params["addrLi"] = li
+    if jibun: params["addrJibun"] = jibun
+    
+    try:
+        res = requests.get(url, params=params, timeout=5).json()
+        data = res.get('data', [])
+        return data[0] if data else None
+    except: return None
+
 @st.cache_data(ttl=600)
 def load_data():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -83,11 +107,21 @@ if not df.empty:
     if dong_list:
         col3, col4 = st.columns(2)
         with col3: sel_dong = st.selectbox("🎯 3. 지도에서 확인할 배전선로(읍/면/동) 선택", dong_list)
-        with col4: search_addr = st.text_input("🔍 내 땅 지번 검색 (선택)", placeholder="예: 예천군 호명읍 산합리 1123")
+        with col4: search_addr = st.text_input("🔍 내 땅 지번 실시간 조회 (선택)", placeholder="예: 김천시 아포읍 대성리 348")
 
         info = target_df[target_df['고유DL명'] == sel_dong].iloc[0]
-        if info['연계가능여부']: st.success(f"✅ [{info['DL명(읍면동)']}] 권역 내의 지번은 상위 계통 여유가 충분합니다.")
-        else: st.error(f"⚠️ [{info['DL명(읍면동)']}] 권역 내의 지번은 배전선로 여유는 있으나 상위 계통 용량이 부족합니다.")
+        
+        # 💡 지번 검색 시 한전 API 다이렉트 호출 로직
+        rt_popup_text = f"{info['DL명(읍면동)']}<br>DL 여유: {info['DL 여유용량']} MW"
+        if search_addr.strip():
+            rt_data = search_realtime_api(search_addr)
+            if rt_data:
+                rt_dl = rt_data.get('dlNm', '확인불가')
+                rt_vol = float(rt_data.get('vol3', 0)) / 1000.0
+                st.success(f"⚡ **실시간 API 연결 성공!** [{search_addr}] 주변 **{rt_dl}** 배전선로의 최신 여유용량은 **{rt_vol:.3f} MW** 입니다.")
+                rt_popup_text = f"실시간 조회: {rt_dl}<br>DL 여유: {rt_vol:.3f} MW"
+            else:
+                st.info("ℹ️ 실시간 API 조회 결과가 없습니다. 번지수를 다시 확인하시거나 동네 이름만 검색해 보세요.")
         
         search_target = info['DL명(읍면동)'] + ("동" if not any(info['DL명(읍면동)'].endswith(s) for s in ['동', '읍', '면', '리']) else "")
         lat, lon, nom_geo = get_location_data(f"{selected_sido} {info['시/구/군']} {search_target}", f"{selected_sido} {info['시/구/군']}")
@@ -96,46 +130,24 @@ if not df.empty:
         if search_addr.strip():
             try:
                 user_loc = Nominatim(user_agent="kepco_app_hwang").geocode(search_addr)
-                if user_loc: 
-                    user_lat, user_lon = user_loc.latitude, user_loc.longitude
-                else:
-                    st.toast("⚠️ 글로벌 지도 엔진 한계로 상세 지번을 찾지 못했습니다. 번지수를 빼고 검색해 보세요.")
+                if user_loc: user_lat, user_lon = user_loc.latitude, user_loc.longitude
             except: pass
 
-        # 💡 지도의 기본 뼈대 준비 (투명 도화지)
         m = folium.Map(location=[lat, lon], zoom_start=13, tiles=None)
         
-        # 💡 1. 일반지도 (앱 실행 시 기본으로 보여줌: show=True)
-        folium.TileLayer(
-            tiles='OpenStreetMap', 
-            name='🗺️ 일반지도', 
-            overlay=False, 
-            control=True,
-            show=True
-        ).add_to(m)
+        folium.TileLayer(tiles='OpenStreetMap', name='🗺️ 일반지도', overlay=False, control=True, show=True).add_to(m)
+        folium.TileLayer(tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', attr='Google Satellite', name='🛰️ 위성지도', overlay=False, control=True, show=False).add_to(m)
         
-        # 💡 2. 위성지도 (뒤에 숨겨둠: show=False)
-        folium.TileLayer(
-            tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', 
-            attr='Google Satellite', 
-            name='🛰️ 위성지도', 
-            overlay=False,
-            control=True,
-            show=False
-        ).add_to(m)
-        
-        # 구획 테두리 그리기
         dong_poly = get_dong_polygon(selected_sido, info['시/구/군'], info['DL명(읍면동)'], get_korea_geojson())
         if dong_poly: folium.GeoJson(dong_poly, style_function=lambda x: {'fillColor': '#FFFF00', 'color': '#FF0000', 'weight': 3, 'fillOpacity': 0.25}).add_to(m)
         elif nom_geo and nom_geo.get('type') in ['Polygon', 'MultiPolygon']: folium.GeoJson(nom_geo, style_function=lambda x: {'fillColor': '#00FFFF', 'color': '#0000FF', 'weight': 3, 'fillOpacity': 0.25}).add_to(m)
             
-        # 중심 핀 및 번지 핀
         folium.Marker([lat, lon], popup=f"{info['DL명(읍면동)']}<br>DL 여유: {info['DL 여유용량']} MW").add_to(m)
+        
         if user_lat and user_lon:
-            folium.Marker([user_lat, user_lon], popup=f"{search_addr} (권역 용량: {info['DL 여유용량']} MW)", icon=folium.Icon(color='red', icon='star')).add_to(m)
+            folium.Marker([user_lat, user_lon], popup=rt_popup_text, icon=folium.Icon(color='red', icon='star')).add_to(m)
             m.fit_bounds([[lat, lon], [user_lat, user_lon]])
         
-        # 💡 우측 상단 레이어 컨트롤 부착
         folium.LayerControl(position='topright').add_to(m)
         
         map_key = f"map_{selected_sido}_{selected_sigg}_{sel_dong}_{search_addr}"
