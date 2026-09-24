@@ -133,7 +133,6 @@ if not df_gs.empty:
     gs_target_df['연계가능여부'] = (gs_target_df['변압기 여유용량'] > 0) & (gs_target_df['변전소 여유용량'] > 0)
     gs_target_df['연계상태'] = gs_target_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
     
-    # 💡 최대로 여유용량 많은 곳부터 순서별 정렬
     gs_target_df = gs_target_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False])
     gs_target_df['고유DL명'] = gs_target_df['시/구/군'] + " " + gs_target_df['DL명(읍면동)']
     gs_target_df = gs_target_df.drop_duplicates(subset=['고유DL명'], keep='first').reset_index(drop=True)
@@ -150,9 +149,13 @@ if not df_gs.empty:
 
         info = gs_target_df[gs_target_df['고유DL명'] == sel_dong].iloc[0]
         base_target = info['DL명(읍면동)'] + ("동" if not any(info['DL명(읍면동)'].endswith(s) for s in ['동', '읍', '면', '리']) else "")
-        full_addr_top = f"{gs_sido} {info['시/구/군']} {search_addr_top.strip() if search_addr_top.strip() else base_target}"
         
-        # 상부 V-World 지도 렌더링
+        # 💡 이중 공백 방지 로직 적용
+        if search_addr_top.strip():
+            full_addr_top = " ".join(filter(None, [gs_sido, info['시/구/군'], search_addr_top.strip()]))
+        else:
+            full_addr_top = " ".join(filter(None, [gs_sido, info['시/구/군'], base_target]))
+        
         coord_top = get_vworld_coord(full_addr_top)
         lat_top, lon_top = coord_top if coord_top else (36.5, 127.5)
         
@@ -195,14 +198,21 @@ if not df_regions.empty:
     rt_col3, rt_col4, rt_col5 = st.columns(3)
     with rt_col3: in_lidong = st.text_input("읍/면/동", placeholder="예: 아포읍", key="rt_dong")
     with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리", key="rt_li")
-    with rt_col5: in_jibun = st.text_input("상세번지 (선택, 산지는 '산' 기입)", placeholder="예: 348 또는 산12", key="rt_jibun")
+    with rt_col5: in_jibun = st.text_input("상세번지 (선택)", placeholder="예: 348 또는 산12", key="rt_jibun")
 
     if st.button("🚀 실시간 여유용량 조회하기", use_container_width=True):
         if not in_lidong:
             st.warning("읍/면/동 정보는 필수로 입력해주세요.")
         else:
-            with st.spinner("한전 서버 실시간 데이터 및 브이월드 정밀 지적도를 결합 중입니다..."):
+            with st.spinner("데이터 조회 및 지도를 생성하는 중입니다..."):
+                
+                # 💡 한전 데이터와 무관하게 주소 문자열을 먼저 완벽하게 조합합니다 (이중 공백 방지)
+                address_parts = [rt_sido, rt_sigg, in_lidong.strip(), in_li.strip(), in_jibun.strip()]
+                full_addr_bot = " ".join(filter(None, address_parts))
+                
+                # 1. 한전 API 호출
                 raw_data = fetch_kepco_realtime(m_cd, c_cd, in_lidong, in_li, in_jibun)
+                rt_info = None
                 
                 if raw_data:
                     rt_df = pd.DataFrame(raw_data)
@@ -219,36 +229,38 @@ if not df_regions.empty:
                     st.success(f"✅ 총 {len(rt_df)}개의 실시간 선로 데이터를 성공적으로 불러왔습니다.")
                     rt_cols = ["순위", "연계상태", "DL명(읍면동)", "DL 여유용량", "변압기 여유용량", "변전소 여유용량", "변전소명"]
                     st.dataframe(rt_df[[c for c in rt_cols if c in rt_df.columns]], use_container_width=True, hide_index=True)
+                    rt_info = rt_df.iloc[0]
+                else:
+                    st.warning("⚠️ 한전 실시간 API에서 해당 번지/동네에 대한 여유용량 데이터를 찾지 못했습니다. (지도는 아래에 정상 표출됩니다)")
+
+                # 💡 2. 한전 결과와 상관없이 지도는 무조건 호출 및 렌더링!
+                coord_bot = get_vworld_coord(full_addr_bot)
+                
+                if coord_bot:
+                    rt_lat, rt_lon = coord_bot
+                    admin_geo_bot = get_vworld_admin_polygon(rt_lat, rt_lon, full_addr_bot)
+                    parcel_geo_bot = get_vworld_parcel_polygon(rt_lat, rt_lon) if in_jibun else None
                     
-                    full_addr_bot = f"{rt_sido} {rt_sigg} {in_lidong} {in_li} {in_jibun}".strip()
-                    coord_bot = get_vworld_coord(full_addr_bot)
+                    m2 = folium.Map(location=[rt_lat, rt_lon], zoom_start=19 if parcel_geo_bot else 15, max_zoom=22, tiles=None)
+                    folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Satellite/{{z}}/{{y}}/{{x}}.jpeg', attr='VWorld', name='🛰️ 브이월드 위성지도', show=True, max_zoom=22).add_to(m2)
+                    folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Base/{{z}}/{{y}}/{{x}}.png', attr='VWorld', name='🗺️ 브이월드 일반지도', show=False, max_zoom=22).add_to(m2)
+                    folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Hybrid/{{z}}/{{y}}/{{x}}.png', attr='VWorld', name='🏷️ 하이브리드 오버레이', overlay=True, show=True, max_zoom=22).add_to(m2)
                     
-                    if coord_bot:
-                        rt_lat, rt_lon = coord_bot
-                        admin_geo_bot = get_vworld_admin_polygon(rt_lat, rt_lon, full_addr_bot)
-                        parcel_geo_bot = get_vworld_parcel_polygon(rt_lat, rt_lon) if in_jibun else None
-                        
-                        m2 = folium.Map(location=[rt_lat, rt_lon], zoom_start=19 if parcel_geo_bot else 15, max_zoom=22, tiles=None)
-                        folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Satellite/{{z}}/{{y}}/{{x}}.jpeg', attr='VWorld', name='🛰️ 브이월드 위성지도', show=True, max_zoom=22).add_to(m2)
-                        folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Base/{{z}}/{{y}}/{{x}}.png', attr='VWorld', name='🗺️ 브이월드 일반지도', show=False, max_zoom=22).add_to(m2)
-                        folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Hybrid/{{z}}/{{y}}/{{x}}.png', attr='VWorld', name='🏷️ 하이브리드 오버레이', overlay=True, show=True, max_zoom=22).add_to(m2)
-                        
-                        folium.WmsTileLayer(url="http://api.vworld.kr/req/wms", layers="lp_pa_cbnd_bubun", fmt="image/png", transparent=True, version="1.3.0", name="📐 주변 전체 지적도 (농지/산지 포함)", overlay=True, show=True if parcel_geo_bot else False, key=VWORLD_KEY, domain=DOMAIN).add_to(m2)
-                        
-                        if admin_geo_bot: folium.GeoJson(admin_geo_bot, style_function=lambda x: {'fillColor': '#00FFFF', 'color': '#FF00FF', 'weight': 3, 'fillOpacity': 0.1}).add_to(m2)
-                        if parcel_geo_bot: folium.GeoJson(parcel_geo_bot, style_function=lambda x: {'fillColor': '#FF0000', 'color': '#FFD700', 'weight': 6, 'fillOpacity': 0.3}).add_to(m2)
-                        
-                        best = rt_df.iloc[0]
-                        folium.Marker(
-                            [rt_lat, rt_lon], 
-                            popup=f"<b>{full_addr_bot}</b><br>배전선로: {best['DL명(읍면동)']}<br>여유용량: {best['DL 여유용량']} MW", 
-                            icon=folium.Icon(color='red', icon='star')
-                        ).add_to(m2)
-                        
-                        folium.LayerControl(position='topright').add_to(m2)
-                        st_folium(m2, width=1200, height=600, returned_objects=[], key=f"rt_map_{rt_lat}_{rt_lon}")
+                    folium.WmsTileLayer(url="http://api.vworld.kr/req/wms", layers="lp_pa_cbnd_bubun", fmt="image/png", transparent=True, version="1.3.0", name="📐 주변 전체 지적도 (농지/산지 포함)", overlay=True, show=True if parcel_geo_bot else False, key=VWORLD_KEY, domain=DOMAIN).add_to(m2)
+                    
+                    if admin_geo_bot: folium.GeoJson(admin_geo_bot, style_function=lambda x: {'fillColor': '#00FFFF', 'color': '#FF00FF', 'weight': 3, 'fillOpacity': 0.1}).add_to(m2)
+                    if parcel_geo_bot: folium.GeoJson(parcel_geo_bot, style_function=lambda x: {'fillColor': '#FF0000', 'color': '#FFD700', 'weight': 6, 'fillOpacity': 0.3}).add_to(m2)
+                    
+                    # 마커 팝업 텍스트 동적 생성
+                    popup_text = f"<b>{full_addr_bot}</b>"
+                    if rt_info is not None:
+                        popup_text += f"<br>배전선로: {rt_info['DL명(읍면동)']}<br>여유용량: {rt_info['DL 여유용량']} MW"
                     else:
-                        st.warning("⚠️ 한전 데이터는 찾았으나, 국토부 지도에서 해당 주소 좌표를 추적할 수 없습니다.")
-                else: st.error("⚠️ 해당 조건에 맞는 데이터가 없습니다. 번지수를 비우고 동/리 단위로 다시 검색해 보세요.")
-else: 
-    st.warning("⚠️ 데이터를 불러오지 못했습니다. 로컬 PC에서 크롤러(`api_crawler.py`)를 실행하여 구글 시트를 업데이트해 주세요.")
+                        popup_text += "<br>⚠️ 한전 용량 데이터 없음"
+                        
+                    folium.Marker([rt_lat, rt_lon], popup=popup_text, icon=folium.Icon(color='red', icon='star')).add_to(m2)
+                    folium.LayerControl(position='topright').add_to(m2)
+                    
+                    st_folium(m2, width=1200, height=600, returned_objects=[], key=f"rt_map_{rt_lat}_{rt_lon}")
+                else:
+                    st.error(f"⚠️ '{full_addr_bot}' 주소의 위치를 브이월드에서 찾을 수 없습니다. 오타나 띄어쓰기를 확인해주세요.")
