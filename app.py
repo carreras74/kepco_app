@@ -115,6 +115,7 @@ def get_vworld_parcel_polygon(lat, lon):
 # 🖥️ 앱 화면 구성 시작
 # ==========================================
 st.title("⚡ 전국 송전여유용량 종합 분석 APP")
+st.markdown("선생님의 **4대 기획 목표(자동 랭킹 정렬 + 실시간 조회 + V-World 정밀 지도)** 완성본입니다.")
 
 # ---------------------------------------------------------
 # 📊 1부: 구글 시트 기반 시도별 여유용량 랭킹 (상부)
@@ -133,7 +134,7 @@ if not df_gs.empty:
     gs_target_df['연계가능여부'] = (gs_target_df['변압기 여유용량'] > 0) & (gs_target_df['변전소 여유용량'] > 0)
     gs_target_df['연계상태'] = gs_target_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
     
-    # 💡 4번 기획: 최대로 여유용량 많은 곳부터 순서별 정렬 적용
+    # 최대로 여유용량 많은 곳부터 순서별 정렬
     gs_target_df = gs_target_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False])
     gs_target_df['고유DL명'] = gs_target_df['시/구/군'] + " " + gs_target_df['DL명(읍면동)']
     gs_target_df = gs_target_df.drop_duplicates(subset=['고유DL명'], keep='first').reset_index(drop=True)
@@ -151,7 +152,6 @@ if not df_gs.empty:
         info = gs_target_df[gs_target_df['고유DL명'] == sel_dong].iloc[0]
         base_target = info['DL명(읍면동)'] + ("동" if not any(info['DL명(읍면동)'].endswith(s) for s in ['동', '읍', '면', '리']) else "")
         
-        # 💡 이중 공백 완벽 제거 로직
         raw_addr_top = f"{gs_sido} {info['시/구/군']} {search_addr_top.strip() if search_addr_top.strip() else base_target}"
         full_addr_top = re.sub(r'\s+', ' ', raw_addr_top).strip()
         
@@ -200,15 +200,17 @@ if not df_regions.empty:
     with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리", key="rt_li")
     with rt_col5: in_jibun = st.text_input("상세번지 (선택, 산지는 '산' 기입)", placeholder="예: 348 또는 산12", key="rt_jibun")
 
+    # 💡 선생님의 기획: V-World에 전송될 정확한 조합 주소를 화면에 실시간 표시
+    raw_addr_bot = f"{rt_sido} {rt_sigg} {in_lidong} {in_li} {in_jibun}"
+    full_addr_bot = re.sub(r'\s+', ' ', raw_addr_bot).strip()
+    
+    st.info(f"📍 **조회 및 지도 검색에 사용될 최종 주소:** `{full_addr_bot}`")
+
     if st.button("🚀 실시간 조회 및 지도 켜기", use_container_width=True):
         if not in_lidong:
             st.warning("읍/면/동 정보는 필수로 입력해주세요.")
         else:
             with st.spinner("데이터 조회 및 지도를 생성하는 중입니다..."):
-                
-                # 💡 이중 공백 완벽 제거 로직
-                raw_addr_bot = f"{rt_sido} {rt_sigg} {in_lidong} {in_li} {in_jibun}"
-                full_addr_bot = re.sub(r'\s+', ' ', raw_addr_bot).strip()
                 
                 # 1. 한전 API 데이터 호출
                 raw_data = fetch_kepco_realtime(m_cd, c_cd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
@@ -233,7 +235,7 @@ if not df_regions.empty:
                 else:
                     st.warning("⚠️ 한전 실시간 API에서 해당 번지/동네에 대한 여유용량 데이터를 찾지 못했습니다. (지도는 아래에 정상 표출됩니다)")
 
-                # 💡 2. 한전 데이터 결과와 상관없이 V-World 지도는 무조건 독립적으로 렌더링!
+                # 💡 2. 한전 데이터 결과와 상관없이 위에서 표시한 `full_addr_bot` 주소를 V-World에 그대로 던짐!
                 coord_bot = get_vworld_coord(full_addr_bot)
                 
                 if coord_bot:
