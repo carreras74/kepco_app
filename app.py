@@ -15,10 +15,13 @@ st.set_page_config(page_title="전국 송전여유용량 대시보드", page_ico
 # ==========================================
 # 💡 API Keys & Settings
 # ==========================================
-# 선생님이 발급하신 스트림릿 전용 웹사이트 키
 vworld_key = "013A53E5-52AB-4FD2-AC9D-B7D4A85D5667"
 KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 domain = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
+
+# 💡 좌측 사이드바에 디버그 모드 부활
+st.sidebar.title("🛠️ 시스템 도구")
+DEBUG_MODE = st.sidebar.checkbox("🔧 디버그 모드 (브이월드 응답 보기)", value=True)
 
 # ==========================================
 # 📊 1부: 구글 시트 데이터 로드 (선생님의 전체 크롤링 데이터)
@@ -44,7 +47,7 @@ def load_gsheets_data():
     except: return pd.DataFrame()
 
 # ==========================================
-# 🎯 2부: 한전 실시간 API 호출
+# 🎯 2부: 한전 실시간 API 호출 (상세조회용)
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_region_codes():
@@ -148,15 +151,16 @@ if not df_regions.empty:
 st.markdown("---")
 
 # ==========================================
-# 🗺️ 3. 브이월드 정밀 지도 (선생님 원본 코드 100% 복원)
+# 🗺️ 3. 브이월드 정밀 지도 (디버그 모드 탑재 원본 코드)
 # ==========================================
 st.header("🗺️ 3. 국토부 브이월드(V-World) 통합 경계 분석 앱")
 st.markdown("동네 이름만 검색하면 **행정구역 경계**를, 번지수까지 검색하면 **내 땅의 상세 지적도(황금색 띠)**를 그리며, 주변 지번을 뚜렷하게 확인합니다.")
 
-search_addr = st.text_input("🔍 주소 검색 (읍/면/동/리 또는 상세 번지)", placeholder="예: 예천군 호명읍 산합리 1123")
+search_addr = st.text_input("🔍 지도 주소 직접 검색 (읍/면/동/리 또는 상세 번지)", placeholder="예: 김천시 아포읍 또는 예천군 호명읍 산합리 1123")
 
 def get_vworld_coord(address, api_key):
-    # 💡 선생님 원본 그대로 http 사용 및 헤더 제거
+    debug_log = []
+    # 💡 선생님의 완벽했던 원본 방식 그대로 복원 (http 사용, 헤더 장난 없음)
     url = "http://api.vworld.kr/req/address"
     params = {
         "service": "address",
@@ -171,12 +175,16 @@ def get_vworld_coord(address, api_key):
         "key": api_key
     }
     try:
-        res = requests.get(url, params=params).json()
+        r = requests.get(url, params=params, timeout=10)
+        debug_log.append(("req/address 호출", r.status_code, r.text[:500]))
+        res = r.json()
         if res.get('response', {}).get('status') == 'OK':
             point = res['response']['result']['point']
-            return float(point['y']), float(point['x'])
-    except: pass
-    return None
+            return float(point['y']), float(point['x']), debug_log
+    except Exception as e:
+        debug_log.append(("req/address 에러발생", None, str(e)))
+        
+    return None, None, debug_log
 
 def get_vworld_admin_polygon(lat, lon, address_text, api_key):
     layer = "lt_c_adri_info" if "리" in address_text.split()[-1] or "리 " in address_text else "lt_c_ademd_info"
@@ -225,9 +233,18 @@ parcel_geojson = None
 layer_used = None
 
 if search_addr:
-    coord = get_vworld_coord(search_addr, vworld_key)
-    if coord:
-        lat, lon = coord
+    coord_result = get_vworld_coord(search_addr, vworld_key)
+    lat_c, lon_c, debug_log = coord_result
+
+    # 💡 좌측 사이드바 체크 시 에러내역 즉시 화면 표출
+    if DEBUG_MODE:
+        with st.expander("🔧 브이월드 실제 응답 (디버그 모드 켜짐)", expanded=True):
+            for label, status, body in debug_log:
+                st.write(f"**{label}** — HTTP 상태코드: `{status}`")
+                st.code(body, language="json")
+
+    if lat_c is not None:
+        lat, lon = lat_c, lon_c
         admin_geojson, layer_used = get_vworld_admin_polygon(lat, lon, search_addr, vworld_key)
         
         has_jibun = bool(re.search(r'\d', search_addr))
@@ -238,7 +255,7 @@ if search_addr:
             area_type = "법정리" if layer_used == "lt_c_adri_info" else "읍/면/동"
             st.success(f"✅ 번지수 없음 감지됨! **{area_type}** 단위의 행정구역 경계만 그립니다.")
     else:
-        st.error("⚠️ 주소를 찾지 못했습니다. 정확히 띄어쓰기하여 입력해 주세요.")
+        st.error("⚠️ 브이월드가 위치를 찾지 못했습니다. 디버그 모드를 켜서 원인을 확인해 주세요.")
 
 start_zoom = 19 if parcel_geojson else 15
 m = folium.Map(location=[lat, lon], zoom_start=start_zoom, max_zoom=22, tiles=None)
@@ -286,7 +303,7 @@ if parcel_geojson:
         name="👑 내 땅 지적도 (황금색 띠)"
     ).add_to(m)
 
-if search_addr and coord:
+if search_addr and lat_c is not None:
     folium.Marker([lat, lon], popup=f"<b>{search_addr}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
 
 folium.LayerControl(position='topright').add_to(m)
