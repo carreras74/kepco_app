@@ -13,11 +13,12 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
 
 # ==========================================
-# 💡 API Keys & Settings
+# 💡 API Keys & Settings (선생님이 찾아내신 도메인 완벽 적용)
 # ==========================================
 VWORLD_KEY = "FE2792CF-B7DF-4F61-8768-FE0D843209E2"
 KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
-DOMAIN = "http://localhost"
+DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app" # 💡 실제 스트림릿 주소로 변경!
+VWORLD_HEADERS = {"Referer": DOMAIN} # 💡 브이월드 보안 차단 방지용 헤더 추가
 
 # ==========================================
 # 💡 1. 구글 시트 데이터 로드 (1번 화면용)
@@ -77,13 +78,13 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
     return []
 
 # ==========================================
-# 💡 3. 국토부 V-World 모듈 (3번 화면용)
+# 💡 3. 국토부 V-World 모듈 (도메인 보안 강화)
 # ==========================================
 def get_vworld_coord(address):
     url = "http://api.vworld.kr/req/address"
     params = {"service": "address", "request": "getcoord", "version": "2.0", "crs": "epsg:4326", "address": address, "refine": "true", "simple": "false", "format": "json", "type": "parcel", "key": VWORLD_KEY}
     try:
-        res = requests.get(url, params=params).json()
+        res = requests.get(url, params=params, headers=VWORLD_HEADERS).json()
         if res.get('response', {}).get('status') == 'OK':
             point = res['response']['result']['point']
             return float(point['y']), float(point['x'])
@@ -95,7 +96,7 @@ def get_vworld_admin_polygon(lat, lon, address_text):
     url = "http://api.vworld.kr/req/data"
     params = {"service": "data", "request": "GetFeature", "data": layer, "key": VWORLD_KEY, "domain": DOMAIN, "geomFilter": f"POINT({lon} {lat})", "crs": "EPSG:4326", "geometry": "true", "size": "1"}
     try:
-        res = requests.get(url, params=params).json()
+        res = requests.get(url, params=params, headers=VWORLD_HEADERS).json()
         if res.get('response', {}).get('status') == 'OK':
             return res['response']['result']['featureCollection'], layer
     except: pass
@@ -105,7 +106,7 @@ def get_vworld_parcel_polygon(lat, lon):
     url = "http://api.vworld.kr/req/data"
     params = {"service": "data", "request": "GetFeature", "data": "lp_pa_cbnd_bubun", "key": VWORLD_KEY, "domain": DOMAIN, "geomFilter": f"POINT({lon} {lat})", "crs": "EPSG:4326", "geometry": "true", "size": "1"}
     try:
-        res = requests.get(url, params=params).json()
+        res = requests.get(url, params=params, headers=VWORLD_HEADERS).json()
         if res.get('response', {}).get('status') == 'OK':
             return res['response']['result']['featureCollection']
     except: pass
@@ -199,17 +200,16 @@ if not df_regions.empty:
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 🗺️ 3부: 국토부 V-World 정밀 지적도 (지도 전용)
+# 🗺️ 3부: 국토부 V-World 정밀 지적도 (지도 전용 독립 모듈)
 # ---------------------------------------------------------
 st.header("🗺️ 3. 국토부 V-World 정밀 지적도 조회")
-st.markdown("위 2번 항목에서 입력한 주소값을 바탕으로, 한전 데이터 유무와 상관없이 **독립적으로 정밀 지도와 지적도**를 그려냅니다.")
+st.markdown("위 2번 항목에서 세팅된 주소값을 바탕으로, 한전 데이터 성공/실패 여부와 상관없이 **무조건 독립적으로 렌더링**됩니다.")
 
-# 3번 영역 전용 실행 버튼
 if st.button("🚀 브이월드 정밀 지도 켜기", use_container_width=True):
     if not in_lidong:
         st.warning("위 2번 항목에서 최소 '읍/면/동'까지는 입력하신 후 버튼을 눌러주세요.")
     else:
-        with st.spinner("국토부 V-World 지도를 렌더링 중입니다..."):
+        with st.spinner("국토부 V-World 지도를 렌더링 중입니다... (스트림릿 도메인 인증 적용됨)"):
             coord_bot = get_vworld_coord(full_addr_bot)
             
             if coord_bot:
