@@ -5,7 +5,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import folium
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
-import os, json, requests, re
+import os, json, requests, re, time
 
 st.set_page_config(page_title="전국 송전여유용량 실시간 파악 APP", page_icon="⚡", layout="wide")
 
@@ -63,7 +63,7 @@ def load_gsheets_data():
     except: return pd.DataFrame()
 
 # ==========================================
-# 💡 Part 2: 실시간 API 호출 데이터 로드
+# 💡 Part 2: 실시간 API 호출 데이터 로드 (집요한 검색 로직 적용)
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_region_codes():
@@ -88,16 +88,25 @@ def get_region_codes():
 def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
     api_key = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
     url = "https://bigdata.kepco.co.kr/openapi/v1/dispersedGeneration.do"
+    
     params = {"apiKey": api_key, "returnType": "json", "metroCd": metroCd, "cityCd": cityCd}
     if lidong: params["addrLidong"] = lidong
     if li: params["addrLi"] = li
     if jibun: params["addrJibun"] = jibun
     
-    try:
-        res = requests.get(url, params=params, timeout=10)
-        if res.status_code == 200:
-            return res.json().get("data", [])
-    except: pass
+    # 💡 [핵심] 한전 서버 과부하를 고려하여 타임아웃을 30초로 늘리고, 최대 3번 끈질기게 요청합니다.
+    for attempt in range(3):
+        try:
+            res = requests.get(url, params=params, timeout=30)
+            if res.status_code == 200:
+                data = res.json().get("data", [])
+                if data: 
+                    return data  # 진짜 상세 지번 데이터를 찾았을 때만 즉시 반환
+        except:
+            pass # 타임아웃 등의 에러가 발생하면 무시하고 아래 sleep으로 넘어감
+            
+        time.sleep(2.5) # 실패했거나 빈 값이면 2.5초 숨을 고르고 한전 서버를 다시 찌름
+        
     return []
 
 # ==========================================
@@ -106,7 +115,7 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
 st.title("⚡ 전국 송전여유용량 종합 분석 APP")
 
 # ---------------------------------------------------------
-# 1부: 구글 시트 기반 전체 랭킹 (기존 로직)
+# 1부: 구글 시트 기반 전체 랭킹
 # ---------------------------------------------------------
 st.header("📊 1. 구글시트 기반 시/군/구 전체 랭킹 조회")
 df_gs = load_gsheets_data()
@@ -182,8 +191,8 @@ if not df_regions.empty:
     with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리", key="rt_li")
     with rt_col5: in_jibun = st.text_input("상세번지 (선택)", placeholder="예: 348", key="rt_jibun")
 
-    if st.button("🚀 실시간 여유용량 조회하기", use_container_width=True):
-        with st.spinner("한전 서버에서 실시간 데이터를 가져오는 중입니다..."):
+    if st.button("🚀 상세 번지 실시간 조회하기", use_container_width=True):
+        with st.spinner("한전 서버의 상세 지번 DB를 끈질기게 찔러보는 중입니다... (최대 30~90초 대기)"):
             raw_data = fetch_kepco_realtime(m_cd, c_cd, in_lidong, in_li, in_jibun)
             
             if raw_data:
@@ -198,7 +207,8 @@ if not df_regions.empty:
                 rt_df = rt_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False]).drop_duplicates(subset=['DL명(읍면동)']).reset_index(drop=True)
                 rt_df["순위"] = range(1, len(rt_df) + 1)
                 
-                st.success(f"✅ 총 {len(rt_df)}개의 실시간 선로 데이터를 성공적으로 불러왔습니다.")
+                st.success(f"✅ 기어코 찾아냈습니다! 정확한 번지수로 조회된 {len(rt_df)}개의 실시간 선로 데이터입니다.")
+                    
                 rt_cols = ["순위", "연계상태", "DL명(읍면동)", "DL 여유용량", "변압기 여유용량", "변전소 여유용량", "변전소명"]
                 st.dataframe(rt_df[[c for c in rt_cols if c in rt_df.columns]], use_container_width=True, hide_index=True)
                 
@@ -218,4 +228,5 @@ if not df_regions.empty:
                 
                 folium.LayerControl(position='topright').add_to(m2)
                 st_folium(m2, width=1200, height=500, returned_objects=[], key=f"rt_map_{rt_lat}_{rt_lon}")
-            else: st.error("⚠️ 해당 조건에 맞는 데이터가 없습니다. 번지수를 비우고 다시 검색해 보세요.")
+            else: 
+                st.error("⚠️ 한전 서버를 3회 이상 끈질기게 찔렀으나, 해당 번지수에 매핑된 데이터가 한전 DB에 아예 존재하지 않습니다. (예: 348 대신 산348, 348-1 등으로 입력해야 할 수 있음)")
