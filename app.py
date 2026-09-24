@@ -146,7 +146,7 @@ st.markdown("---")
 st.header("🗺️ 3. 국토부 브이월드(V-World) 통합 경계 분석 앱")
 st.markdown("동네 이름만 검색하면 **행정구역 경계**를, 번지수까지 검색하면 **내 땅의 상세 지적도(황금색 띠)**를 그리며, 주변 지번을 뚜렷하게 확인합니다.")
 
-vworld_key = "FE2792CF-B7DF-4F61-8768-FE0D843209E2"
+vworld_key = "013A53E5-52AB-4FD2-AC9D-B7D4A85D5667"
 # 💡 스트림릿 배포용 도메인 에러 해결 코드
 domain = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
