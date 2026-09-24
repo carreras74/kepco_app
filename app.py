@@ -22,6 +22,10 @@ KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d" 
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
+# 💡 절대 빼지 않겠습니다! 디버그 모드 영구 장착
+st.sidebar.title("🛠️ 시스템 도구")
+DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=True)
+
 # ==========================================
 # 📊 기획 1, 3, 4번: 구글 시트 연동 및 랭킹 정렬
 # ==========================================
@@ -80,76 +84,89 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
     return []
 
 # ==========================================
-# 🗺️ 3부: 카카오 좌표 변환 모듈
+# 🗺️ 3부: 백엔드 API 통신 (카카오 + 브이월드)
 # ==========================================
 def get_kakao_coord(address):
-    """해외 차단 없는 카카오로 '위도/경도'만 뽑아냅니다."""
+    """해외 차단 없는 카카오로 '위도/경도'를 먼저 뽑아냅니다."""
+    debug_log = []
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
     
     url_addr = "https://dapi.kakao.com/v2/local/search/address.json"
     try:
-        res = requests.get(url_addr, headers=headers, params={"query": address}, timeout=5).json()
+        r1 = requests.get(url_addr, headers=headers, params={"query": address}, timeout=5)
+        debug_log.append(("카카오 주소검색", r1.status_code, r1.text[:300]))
+        res = r1.json()
         if res.get('documents'):
-            return float(res['documents'][0]['y']), float(res['documents'][0]['x'])
-    except: pass
+            return float(res['documents'][0]['y']), float(res['documents'][0]['x']), debug_log
+    except Exception as e:
+        debug_log.append(("카카오 주소검색 에러", None, str(e)))
 
     url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
     try:
-        res = requests.get(url_kw, headers=headers, params={"query": address}, timeout=5).json()
-        if res.get('documents'):
-            return float(res['documents'][0]['y']), float(res['documents'][0]['x'])
-    except: pass
+        r2 = requests.get(url_kw, headers=headers, params={"query": address}, timeout=5)
+        debug_log.append(("카카오 키워드검색", r2.status_code, r2.text[:300]))
+        res2 = r2.json()
+        if res2.get('documents'):
+            return float(res2['documents'][0]['y']), float(res2['documents'][0]['x']), debug_log
+    except Exception as e:
+        debug_log.append(("카카오 키워드검색 에러", None, str(e)))
     
-    return None
+    return None, None, debug_log
+
+def fetch_vworld_polygon(lat, lon, layer):
+    """브이월드 폴리곤(띠) 데이터를 파이썬 서버에서 우선 시도합니다."""
+    debug_log = []
+    url = "http://api.vworld.kr/req/data" 
+    params = {
+        "service": "data", "request": "GetFeature", "data": layer,
+        "key": VWORLD_KEY, "domain": DOMAIN,
+        "geomFilter": f"POINT({lon} {lat})", "crs": "EPSG:4326", "geometry": "true", "size": "1"
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer": DOMAIN
+    }
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=5)
+        debug_log.append((f"V-World 백엔드 요청 ({layer})", r.status_code, r.text[:300]))
+        if r.status_code == 200:
+            res = r.json()
+            if res.get('response', {}).get('status') == 'OK':
+                return res['response']['result']['featureCollection'], debug_log
+    except Exception as e:
+        debug_log.append((f"V-World 백엔드 에러 ({layer})", None, str(e)))
+    return None, debug_log
 
 # ==========================================
-# 🚀 띠(경계선) 렌더링을 위한 특수 자바스크립트 주입기
+# 🚀 띠(경계선) 렌더링을 위한 특수 자바스크립트 주입기 (최후의 보루)
 # ==========================================
 class VWorldClientPolygon(MacroElement):
-    """스트림릿 서버 차단을 뚫기 위해 사용자 웹 브라우저가 직접 브이월드 띠 데이터를 다운로드하게 만드는 특수 모듈"""
-    def __init__(self, lat, lon, address_text, vworld_key, domain):
+    """백엔드 차단 시 선생님의 웹 브라우저가 직접 띠를 그리도록 강제하는 특수 코드입니다."""
+    def __init__(self, lat, lon, layer, vworld_key, domain, color, fill_color):
         super().__init__()
         self._template = Template("""
         {% macro script(this, kwargs) %}
             var map_instance = {{this._parent.get_name()}};
-            var address_text = "{{this.address_text}}";
+            var url = "https://api.vworld.kr/req/data?service=data&request=GetFeature&data={{this.layer}}&key={{this.vworld_key}}&domain={{this.domain}}&geomFilter=POINT({{this.lon}} {{this.lat}})&crs=EPSG:4326&geometry=true&size=1";
             
-            var admin_layer = (address_text.indexOf("리 ") > -1 || address_text.endsWith("리")) ? "lt_c_adri_info" : "lt_c_ademd_info";
-            var admin_url = "https://api.vworld.kr/req/data?service=data&request=GetFeature&data=" + admin_layer + "&key={{this.vworld_key}}&domain={{this.domain}}&geomFilter=POINT({{this.lon}} {{this.lat}})&crs=EPSG:4326&geometry=true&size=1";
-            var parcel_url = "https://api.vworld.kr/req/data?service=data&request=GetFeature&data=lp_pa_cbnd_bubun&key={{this.vworld_key}}&domain={{this.domain}}&geomFilter=POINT({{this.lon}} {{this.lat}})&crs=EPSG:4326&geometry=true&size=1";
-            
-            var has_jibun = /\\d/.test(address_text);
-
-            // 1. 행정구역 옥색 띠 그리기
-            fetch(admin_url)
+            fetch(url)
                 .then(res => res.json())
                 .then(data => {
                     if(data && data.response && data.response.status === 'OK' && data.response.result) {
                         L.geoJSON(data.response.result.featureCollection, {
-                            style: function() { return {color: '#FF00FF', weight: 3, fillColor: '#00FFFF', fillOpacity: 0.1}; }
+                            style: function() { return {color: '{{this.color}}', weight: 4, fillColor: '{{this.fill_color}}', fillOpacity: 0.3}; }
                         }).addTo(map_instance);
                     }
-                }).catch(e => console.log(e));
-
-            // 2. 지적도 황금색 띠 그리기 (지번이 있을 때만)
-            if(has_jibun) {
-                fetch(parcel_url)
-                    .then(res => res.json())
-                    .then(data => {
-                        if(data && data.response && data.response.status === 'OK' && data.response.result) {
-                            L.geoJSON(data.response.result.featureCollection, {
-                                style: function() { return {color: '#FFD700', weight: 6, fillColor: '#FF0000', fillOpacity: 0.3}; }
-                            }).addTo(map_instance);
-                        }
-                    }).catch(e => console.log(e));
-            }
+                }).catch(e => console.error("V-World JS 렌더링 에러: ", e));
         {% endmacro %}
         """)
         self.lat = lat
         self.lon = lon
-        self.address_text = address_text
+        self.layer = layer
         self.vworld_key = vworld_key
         self.domain = domain
+        self.color = color
+        self.fill_color = fill_color
 
 # ==========================================
 # 🖥️ 앱 화면 구성 시작
@@ -173,7 +190,6 @@ if not df_gs.empty:
     gs_target_df['연계가능여부'] = (gs_target_df['변압기 여유용량'] > 0) & (gs_target_df['변전소 여유용량'] > 0)
     gs_target_df['연계상태'] = gs_target_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
 
-    # 최대 여유용량 순 정렬
     gs_target_df = gs_target_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False])
     gs_target_df['고유DL명'] = gs_target_df['시/구/군'] + " " + gs_target_df['DL명(읍면동)']
     gs_target_df = gs_target_df.drop_duplicates(subset=['고유DL명'], keep='first').reset_index(drop=True)
@@ -223,7 +239,7 @@ if not df_regions.empty:
 st.markdown("---")
 
 # ==========================================
-# 🗺️ 3. 브이월드 정밀 지도 (보안HTTPS + 띠 복원 패치)
+# 🗺️ 3. 브이월드 정밀 지도 (띠 복원 패치 + 디버그)
 # ==========================================
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
 st.markdown("동네 이름만 검색하면 **행정구역 경계**를, 번지수까지 검색하면 **내 땅의 상세 지적도(황금색 띠)**를 브라우저가 다이렉트로 그려냅니다.")
@@ -231,13 +247,31 @@ st.markdown("동네 이름만 검색하면 **행정구역 경계**를, 번지수
 search_addr = st.text_input("🔍 지도 주소 직접 검색 (읍/면/동/리 또는 상세 번지)", placeholder="예: 김천시 아포읍 또는 예천군 호명읍 산합리 1123")
 
 if search_addr:
-    with st.spinner("지도를 불러오는 중입니다..."):
-        coord = get_kakao_coord(search_addr)
+    with st.spinner("카카오가 좌표를 찾고, 브이월드 위성지도와 경계선을 불러옵니다..."):
+        lat_c, lon_c, kakao_log = get_kakao_coord(search_addr)
+        all_logs = kakao_log.copy()
         
-        if coord:
-            lat, lon = coord
+        if lat_c is not None:
+            lat, lon = lat_c, lon_c
             has_jibun = bool(re.search(r'\d', search_addr))
+            layer_used = "lt_c_adri_info" if "리" in search_addr.split()[-1] or "리 " in search_addr else "lt_c_ademd_info"
             
+            # 파이썬 통신으로 폴리곤 시도
+            admin_geojson, admin_log = fetch_vworld_polygon(lat, lon, layer_used)
+            all_logs.extend(admin_log)
+            
+            parcel_geojson = None
+            if has_jibun:
+                parcel_geojson, parcel_log = fetch_vworld_polygon(lat, lon, "lp_pa_cbnd_bubun")
+                all_logs.extend(parcel_log)
+            
+            # 💡 [핵심] 디버그 모드 출력창 (끄라고 하실 때까지 절대 안 뺍니다!)
+            if DEBUG_MODE:
+                with st.expander("🔧 통신 디버그 기록 (에러 원인 분석용)", expanded=True):
+                    for label, status, body in all_logs:
+                        st.write(f"**{label}** — HTTP 상태: `{status}`")
+                        st.code(body, language="json")
+
             if has_jibun:
                 st.success(f"✅ 카카오 주소 탐색 성공! (상세번지 감지) — 위도: {lat:.4f}, 경도: {lon:.4f}")
             else:
@@ -246,7 +280,7 @@ if search_addr:
             start_zoom = 19 if has_jibun else 15
             m = folium.Map(location=[lat, lon], zoom_start=start_zoom, max_zoom=22, tiles=None)
 
-            # 💡 HTTP 차단(Mixed Content) 방지를 위해 모두 HTTPS 로 변경 적용!
+            # 💡 HTTPS를 적용하여 맵 타일이 브라우저에서 잘리지 않도록 보호
             folium.TileLayer(
                 tiles=f'https://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Satellite/{{z}}/{{y}}/{{x}}.jpeg',
                 attr='VWorld Satellite', name='🛰️ 브이월드 위성지도', overlay=False, control=True, show=True, max_zoom=22
@@ -262,19 +296,42 @@ if search_addr:
                 attr='VWorld Hybrid', name='🏷️ 주소/도로명 글자 오버레이', overlay=True, control=True, show=True, max_zoom=22
             ).add_to(m)
 
-            # 💡 주변 전체 지적도 선 표출 (HTTPS 통신)
-            folium.WmsTileLayer(
-                url="https://api.vworld.kr/req/wms", layers="lp_pa_cbnd_bubun", fmt="image/png", transparent=True, version="1.3.0",
-                name="📐 주변 지적도 선 & 지번", overlay=True, control=True, show=True if has_jibun else False,
-                key=VWORLD_KEY, domain=DOMAIN
-            ).add_to(m)
+            # 💡 주변 지적도/행정구역 선 WMS 그리기 (HTTPS 적용 완료)
+            if has_jibun:
+                folium.WmsTileLayer(
+                    url="https://api.vworld.kr/req/wms", layers="lp_pa_cbnd_bubun", fmt="image/png", transparent=True, version="1.3.0",
+                    name="📐 주변 지적도 선 & 지번", overlay=True, control=True, show=True,
+                    key=VWORLD_KEY, domain=DOMAIN
+                ).add_to(m)
+            else:
+                folium.WmsTileLayer(
+                    url="https://api.vworld.kr/req/wms", layers=layer_used, fmt="image/png", transparent=True, version="1.3.0",
+                    name="🎯 행정구역 경계선", overlay=True, control=True, show=True,
+                    key=VWORLD_KEY, domain=DOMAIN
+                ).add_to(m)
 
-            # 💡 [핵심 기술] 파이썬 서버를 버리고, 선생님의 웹 브라우저가 직접 '황금색 띠/옥색 띠'를 다운로드해서 그리도록 스크립트 주입
-            VWorldClientPolygon(lat, lon, search_addr, VWORLD_KEY, DOMAIN).add_to(m)
+            # 💡 1차 방어막: 파이썬이 성공했으면 그대로 폴리곤 그리기
+            if admin_geojson:
+                folium.GeoJson(admin_geojson, style_function=lambda x: {'fillColor': '#00FFFF', 'color': '#FF00FF', 'weight': 3, 'fillOpacity': 0.1}, name="🎯 행정구역 강조 띠").add_to(m)
+            else:
+                # 💡 2차 방어막 (최후의 보루): 파이썬이 튕겼으면 브라우저가 직접 그리도록 JS 투입
+                VWorldClientPolygon(lat, lon, layer_used, VWORLD_KEY, DOMAIN, '#FF00FF', '#00FFFF').add_to(m)
+
+            if has_jibun:
+                if parcel_geojson:
+                    folium.GeoJson(parcel_geojson, style_function=lambda x: {'fillColor': '#FF0000', 'color': '#FFD700', 'weight': 6, 'fillOpacity': 0.3}, name="👑 내 땅 강조 띠").add_to(m)
+                else:
+                    # 💡 2차 방어막: 지적도 황금색 띠 JS 투입
+                    VWorldClientPolygon(lat, lon, "lp_pa_cbnd_bubun", VWORLD_KEY, DOMAIN, '#FFD700', '#FF0000').add_to(m)
 
             folium.Marker([lat, lon], popup=f"<b>{search_addr}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
             folium.LayerControl(position='topright').add_to(m)
             
-            st_folium(m, width=1300, height=750, returned_objects=[], key=f"map_{lat}_{lon}")
+            st_folium(m, width=1300, height=750, returned_objects=[], key=f"hybrid_map_{lat}_{lon}")
         else:
-            st.error("⚠️ 카카오 엔진에서 주소를 찾지 못했습니다. 띄어쓰기 등을 확인해주세요.")
+            if DEBUG_MODE:
+                with st.expander("🔧 통신 디버그 기록 (에러 원인 분석용)", expanded=True):
+                    for label, status, body in all_logs:
+                        st.write(f"**{label}** — HTTP 상태: `{status}`")
+                        st.code(body, language="json")
+            st.error("⚠️ 카카오 엔진에서 주소를 찾지 못했습니다. 디버그 로그를 확인해 주세요.")
