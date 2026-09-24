@@ -15,11 +15,15 @@ st.set_page_config(page_title="전국 송전여유용량 대시보드", page_ico
 # ==========================================
 # 💡 API Keys & Settings
 # ==========================================
-# 새로 발급받은 웹사이트 전용 인증키 적용
-vworld_key = "013A53E5-52AB-4FD2-AC9D-B7D4A85D5667"
-KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
+# 배포 환경(Streamlit Cloud)에서는 st.secrets 사용을 강력 권장합니다.
+# (하드코딩된 키가 GitHub 저장소에 그대로 노출되면 다른 사람이 도용/과다호출로 키가 정지될 수 있습니다)
+vworld_key = st.secrets.get("VWORLD_KEY", "013A53E5-52AB-4FD2-AC9D-B7D4A85D5667")
+KEPCO_KEY = st.secrets.get("KEPCO_KEY", "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o")
 # 브이월드 서버 승인용 실제 스트림릿 도메인
 domain = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
+
+# 디버그 모드: 배포 환경에서 실제로 어떤 응답이 오는지 눈으로 확인하기 위한 스위치
+DEBUG_MODE = st.sidebar.checkbox("🔧 디버그 모드 (브이월드 실제 응답 보기)", value=False)
 
 # ==========================================
 # 📊 1부: 구글 시트 데이터 로드 (전체 크롤링 연동)
@@ -84,7 +88,7 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
 st.title("⚡ 전국 송전여유용량 종합 분석 APP")
 
 # ---------------------------------------------------------
-# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 
+# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹
 # ---------------------------------------------------------
 st.header("📊 1. 전체 지역 랭킹 조회 (매일 자동 업데이트 엑셀 연동)")
 df_gs = load_gsheets_data()
@@ -95,16 +99,16 @@ if not df_gs.empty:
     with gs_col2:
         gs_filtered = df_gs[df_gs['시/도'] == gs_sido]
         gs_sigg = st.selectbox("🏢 랭킹 조회 시/구/군", ["전체"] + sorted(gs_filtered['시/구/군'].unique().tolist()), key="gs_sigg")
-        
+
     gs_target_df = gs_filtered.copy() if gs_sigg == "전체" else gs_filtered[gs_filtered['시/구/군'] == gs_sigg].copy()
     gs_target_df['연계가능여부'] = (gs_target_df['변압기 여유용량'] > 0) & (gs_target_df['변전소 여유용량'] > 0)
     gs_target_df['연계상태'] = gs_target_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
-    
+
     gs_target_df = gs_target_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False])
     gs_target_df['고유DL명'] = gs_target_df['시/구/군'] + " " + gs_target_df['DL명(읍면동)']
     gs_target_df = gs_target_df.drop_duplicates(subset=['고유DL명'], keep='first').reset_index(drop=True)
     gs_target_df["순위"] = range(1, len(gs_target_df) + 1)
-    
+
     gs_cols = ["순위", "연계상태", "시/구/군", "DL명(읍면동)", "DL 여유용량", "DL 누적연계용량", "변압기 여유용량", "변전소 여유용량", "변전소명"]
     st.dataframe(gs_target_df[[c for c in gs_cols if c in gs_target_df.columns]], use_container_width=True, hide_index=True)
 else: st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크롤러를 실행해 주세요.")
@@ -121,9 +125,9 @@ if not df_regions.empty:
     rt_col1, rt_col2 = st.columns(2)
     with rt_col1: rt_sido = st.selectbox("📍 실시간 조회 시/도", sorted(df_regions['시도'].unique().tolist()), key="rt_sido_bot")
     with rt_col2: rt_sigg = st.selectbox("🏢 실시간 조회 시/군/구", sorted(df_regions[df_regions['시도'] == rt_sido]['시군구'].unique().tolist()), key="rt_sigg_bot")
-    
+
     target_reg = df_regions[(df_regions['시도'] == rt_sido) & (df_regions['시군구'] == rt_sigg)].iloc[0]
-    
+
     rt_col3, rt_col4, rt_col5 = st.columns(3)
     with rt_col3: in_lidong = st.text_input("읍/면/동 (필수)", placeholder="예: 아포읍")
     with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리")
@@ -156,30 +160,44 @@ st.markdown("동네 이름만 검색하면 **행정구역 경계**를, 번지수
 
 search_addr = st.text_input("🔍 지도 주소 직접 검색 (읍/면/동/리 또는 상세 번지)", placeholder="예: 김천시 아포읍 또는 예천군 호명읍 산합리 1123")
 
+
 def get_vworld_coord(address, api_key):
+    """
+    변경점: 실패해도 조용히 넘기지 않고 (status_code, 응답 본문)을 debug_log에 쌓아서
+    배포 환경에서 실제로 무슨 이유로 실패하는지(도메인 불일치/키 오류/쿼터 초과 등) 볼 수 있게 함.
+    """
+    debug_log = []
+
     # 💡 1차: 정확한 지번이 있을 때의 정밀 주소 검색
     url_addr = "http://api.vworld.kr/req/address"
     params_addr = {"service": "address", "request": "getcoord", "version": "2.0", "crs": "epsg:4326", "address": address, "refine": "true", "simple": "false", "format": "json", "type": "parcel", "key": api_key}
     try:
-        res = requests.get(url_addr, params=params_addr, headers={"Referer": domain}).json()
+        r = requests.get(url_addr, params=params_addr, headers={"Referer": domain}, timeout=10)
+        debug_log.append(("address(parcel)", r.status_code, r.text[:500]))
+        res = r.json()
         if res.get('response', {}).get('status') == 'OK':
             point = res['response']['result']['point']
-            return float(point['y']), float(point['x'])
-    except: pass
+            return float(point['y']), float(point['x']), debug_log
+    except Exception as e:
+        debug_log.append(("address(parcel) EXCEPTION", None, str(e)))
 
     # 💡 2차: "김천시 아포읍" 처럼 지번이 없어 1차에서 튕겼을 때 동네 중앙을 찾아주는 장소 검색
     url_search = "http://api.vworld.kr/req/search"
     params_search = {"service": "search", "request": "search", "version": "2.0", "crs": "epsg:4326", "query": address, "type": "place", "format": "json", "key": api_key}
     try:
-        res2 = requests.get(url_search, params=params_search, headers={"Referer": domain}).json()
+        r2 = requests.get(url_search, params=params_search, headers={"Referer": domain}, timeout=10)
+        debug_log.append(("search(place)", r2.status_code, r2.text[:500]))
+        res2 = r2.json()
         if res2.get('response', {}).get('status') == 'OK':
             items = res2['response']['result']['items']
             if items:
                 point = items[0]['point']
-                return float(point['y']), float(point['x'])
-    except: pass
-    
-    return None
+                return float(point['y']), float(point['x']), debug_log
+    except Exception as e:
+        debug_log.append(("search(place) EXCEPTION", None, str(e)))
+
+    return None, None, debug_log
+
 
 def get_vworld_admin_polygon(lat, lon, address_text, api_key):
     layer = "lt_c_adri_info" if "리" in address_text.split()[-1] or "리 " in address_text else "lt_c_ademd_info"
@@ -189,7 +207,7 @@ def get_vworld_admin_polygon(lat, lon, address_text, api_key):
         "geomFilter": f"POINT({lon} {lat})", "crs": "EPSG:4326", "geometry": "true", "size": "1"
     }
     try:
-        res = requests.get(url, params=params, headers={"Referer": domain}).json()
+        res = requests.get(url, params=params, headers={"Referer": domain}, timeout=10).json()
         if res.get('response', {}).get('status') == 'OK':
             return res['response']['result']['featureCollection'], layer
     except: pass
@@ -202,7 +220,7 @@ def get_vworld_parcel_polygon(lat, lon, api_key):
         "geomFilter": f"POINT({lon} {lat})", "crs": "EPSG:4326", "geometry": "true", "size": "1"
     }
     try:
-        res = requests.get(url, params=params, headers={"Referer": domain}).json()
+        res = requests.get(url, params=params, headers={"Referer": domain}, timeout=10).json()
         if res.get('response', {}).get('status') == 'OK':
             return res['response']['result']['featureCollection']
     except: pass
@@ -212,13 +230,24 @@ lat, lon = 36.6573, 128.4528
 admin_geojson = None
 parcel_geojson = None
 layer_used = None
+coord = None
 
 if search_addr:
-    coord = get_vworld_coord(search_addr, vworld_key)
-    if coord:
+    coord_result = get_vworld_coord(search_addr, vworld_key)
+    lat_c, lon_c, debug_log = coord_result
+
+    if DEBUG_MODE:
+        with st.expander("🔧 브이월드 실제 응답 (디버그)", expanded=True):
+            st.write(f"**요청 시 사용된 Referer/domain:** `{domain}`")
+            for label, status, body in debug_log:
+                st.write(f"**{label}** — status: `{status}`")
+                st.code(body, language="json")
+
+    if lat_c is not None:
+        coord = (lat_c, lon_c)
         lat, lon = coord
         admin_geojson, layer_used = get_vworld_admin_polygon(lat, lon, search_addr, vworld_key)
-        
+
         has_jibun = bool(re.search(r'\d', search_addr))
         if has_jibun:
             parcel_geojson = get_vworld_parcel_polygon(lat, lon, vworld_key)
@@ -227,7 +256,7 @@ if search_addr:
             area_type = "법정리" if layer_used == "lt_c_adri_info" else "읍/면/동"
             st.success(f"✅ 번지수 없음 감지됨! **{area_type}** 단위의 행정구역 경계만 그립니다.")
     else:
-        st.error("⚠️ 주소를 찾지 못했습니다. 정확히 띄어쓰기하여 입력해 주세요.")
+        st.error("⚠️ 주소를 찾지 못했습니다. 정확히 띄어쓰기하여 입력해 주세요. (위 디버그 모드를 켜면 실제 원인을 볼 수 있습니다)")
 
 start_zoom = 19 if parcel_geojson else 15
 m = folium.Map(location=[lat, lon], zoom_start=start_zoom, max_zoom=22, tiles=None)
