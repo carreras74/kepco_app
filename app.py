@@ -13,7 +13,16 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
 
 # ==========================================
-# 📊 1부: 구글 시트 데이터 로드 (선생님의 전체 크롤링 결과)
+# 💡 API Keys & Settings
+# ==========================================
+# 새로 발급받은 웹사이트 전용 인증키 적용
+vworld_key = "013A53E5-52AB-4FD2-AC9D-B7D4A85D5667"
+KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
+# 브이월드 서버 승인용 실제 스트림릿 도메인
+domain = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
+
+# ==========================================
+# 📊 1부: 구글 시트 데이터 로드 (전체 크롤링 연동)
 # ==========================================
 @st.cache_data(ttl=600)
 def load_gsheets_data():
@@ -54,7 +63,7 @@ def get_region_codes():
 
 def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
     url = "https://bigdata.kepco.co.kr/openapi/v1/dispersedGeneration.do"
-    params = {"apiKey": "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o", "returnType": "json", "metroCd": metroCd, "cityCd": cityCd}
+    params = {"apiKey": KEPCO_KEY, "returnType": "json", "metroCd": metroCd, "cityCd": cityCd}
     if lidong: params["addrLidong"] = lidong
     if li: params["addrLi"] = li
     if jibun: params["addrJibun"] = jibun
@@ -91,7 +100,6 @@ if not df_gs.empty:
     gs_target_df['연계가능여부'] = (gs_target_df['변압기 여유용량'] > 0) & (gs_target_df['변전소 여유용량'] > 0)
     gs_target_df['연계상태'] = gs_target_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
     
-    # 💡 4번 기획: 최대로 여유용량 많은 곳부터 순서별 정렬
     gs_target_df = gs_target_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False])
     gs_target_df['고유DL명'] = gs_target_df['시/구/군'] + " " + gs_target_df['DL명(읍면동)']
     gs_target_df = gs_target_df.drop_duplicates(subset=['고유DL명'], keep='first').reset_index(drop=True)
@@ -141,52 +149,44 @@ if not df_regions.empty:
 st.markdown("---")
 
 # ==========================================
-# 🗺️ 3. 선생님의 원본 브이월드 코드 (100% 덮어쓰기)
+# 🗺️ 3. 브이월드 정밀 지도 (스트림릿 도메인 인증 + 장소 검색 내장)
 # ==========================================
 st.header("🗺️ 3. 국토부 브이월드(V-World) 통합 경계 분석 앱")
 st.markdown("동네 이름만 검색하면 **행정구역 경계**를, 번지수까지 검색하면 **내 땅의 상세 지적도(황금색 띠)**를 그리며, 주변 지번을 뚜렷하게 확인합니다.")
 
-vworld_key = "013A53E5-52AB-4FD2-AC9D-B7D4A85D5667"
-# 💡 스트림릿 배포용 도메인 에러 해결 코드
-domain = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
-
-search_addr = st.text_input("🔍 주소 검색 (읍/면/동/리 또는 상세 번지)", placeholder="예: 예천군 호명읍 산합리 1123")
+search_addr = st.text_input("🔍 지도 주소 직접 검색 (읍/면/동/리 또는 상세 번지)", placeholder="예: 김천시 아포읍 또는 예천군 호명읍 산합리 1123")
 
 def get_vworld_coord(address, api_key):
-    url = "http://api.vworld.kr/req/address"
-    params = {
-        "service": "address",
-        "request": "getcoord",
-        "version": "2.0",
-        "crs": "epsg:4326",
-        "address": address,
-        "refine": "true",
-        "simple": "false",
-        "format": "json",
-        "type": "parcel", 
-        "key": api_key
-    }
+    # 💡 1차: 정확한 지번이 있을 때의 정밀 주소 검색
+    url_addr = "http://api.vworld.kr/req/address"
+    params_addr = {"service": "address", "request": "getcoord", "version": "2.0", "crs": "epsg:4326", "address": address, "refine": "true", "simple": "false", "format": "json", "type": "parcel", "key": api_key}
     try:
-        res = requests.get(url, params=params, headers={"Referer": domain}).json()
+        res = requests.get(url_addr, params=params_addr, headers={"Referer": domain}).json()
         if res.get('response', {}).get('status') == 'OK':
             point = res['response']['result']['point']
             return float(point['y']), float(point['x'])
     except: pass
+
+    # 💡 2차: "김천시 아포읍" 처럼 지번이 없어 1차에서 튕겼을 때 동네 중앙을 찾아주는 장소 검색
+    url_search = "http://api.vworld.kr/req/search"
+    params_search = {"service": "search", "request": "search", "version": "2.0", "crs": "epsg:4326", "query": address, "type": "place", "format": "json", "key": api_key}
+    try:
+        res2 = requests.get(url_search, params=params_search, headers={"Referer": domain}).json()
+        if res2.get('response', {}).get('status') == 'OK':
+            items = res2['response']['result']['items']
+            if items:
+                point = items[0]['point']
+                return float(point['y']), float(point['x'])
+    except: pass
+    
     return None
 
 def get_vworld_admin_polygon(lat, lon, address_text, api_key):
     layer = "lt_c_adri_info" if "리" in address_text.split()[-1] or "리 " in address_text else "lt_c_ademd_info"
     url = "http://api.vworld.kr/req/data"
     params = {
-        "service": "data",
-        "request": "GetFeature",
-        "data": layer,
-        "key": api_key,
-        "domain": domain,
-        "geomFilter": f"POINT({lon} {lat})",
-        "crs": "EPSG:4326",
-        "geometry": "true",
-        "size": "1"
+        "service": "data", "request": "GetFeature", "data": layer, "key": api_key, "domain": domain,
+        "geomFilter": f"POINT({lon} {lat})", "crs": "EPSG:4326", "geometry": "true", "size": "1"
     }
     try:
         res = requests.get(url, params=params, headers={"Referer": domain}).json()
@@ -198,15 +198,8 @@ def get_vworld_admin_polygon(lat, lon, address_text, api_key):
 def get_vworld_parcel_polygon(lat, lon, api_key):
     url = "http://api.vworld.kr/req/data"
     params = {
-        "service": "data",
-        "request": "GetFeature",
-        "data": "lp_pa_cbnd_bubun",
-        "key": api_key,
-        "domain": domain,
-        "geomFilter": f"POINT({lon} {lat})",
-        "crs": "EPSG:4326",
-        "geometry": "true",
-        "size": "1"
+        "service": "data", "request": "GetFeature", "data": "lp_pa_cbnd_bubun", "key": api_key, "domain": domain,
+        "geomFilter": f"POINT({lon} {lat})", "crs": "EPSG:4326", "geometry": "true", "size": "1"
     }
     try:
         res = requests.get(url, params=params, headers={"Referer": domain}).json()
@@ -236,13 +229,9 @@ if search_addr:
     else:
         st.error("⚠️ 주소를 찾지 못했습니다. 정확히 띄어쓰기하여 입력해 주세요.")
 
-# 💡 지번 글씨가 잘 보이도록 상세 검색 시 줌 레벨을 19까지 당기고, max_zoom을 22로 풀어줍니다.
 start_zoom = 19 if parcel_geojson else 15
 m = folium.Map(location=[lat, lon], zoom_start=start_zoom, max_zoom=22, tiles=None)
 
-# --------------------------------------------------
-# 🗺️ 배경 지도 레이어
-# --------------------------------------------------
 folium.TileLayer(
     tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{vworld_key}/Satellite/{{z}}/{{y}}/{{x}}.jpeg',
     attr='VWorld Satellite', name='🛰️ 브이월드 위성지도', overlay=False, control=True, show=True, max_zoom=22
@@ -258,46 +247,19 @@ folium.TileLayer(
     attr='VWorld Hybrid', name='🏷️ 주소/도로명 글자 오버레이', overlay=True, control=True, show=True, max_zoom=22
 ).add_to(m)
 
-# --------------------------------------------------
-# 📐 주변 전체 지적도 (연속지적도)
-# --------------------------------------------------
-# 💡 상세 검색 시 기본으로 지적도(지번 텍스트 포함)가 즉시 켜지도록 show 파라미터를 동적으로 설정
 folium.WmsTileLayer(
-    url="http://api.vworld.kr/req/wms",
-    layers="lp_pa_cbnd_bubun",
-    fmt="image/png",
-    transparent=True,
-    version="1.3.0",
-    name="📐 주변 전체 지적도 선 & 지번",
-    overlay=True,
-    control=True,
-    show=True if parcel_geojson else False,
-    key=vworld_key,
-    domain=domain
+    url="http://api.vworld.kr/req/wms", layers="lp_pa_cbnd_bubun", fmt="image/png", transparent=True, version="1.3.0",
+    name="📐 주변 전체 지적도 선 & 지번", overlay=True, control=True, show=True if parcel_geojson else False,
+    key=vworld_key, domain=domain
 ).add_to(m)
 
-# --------------------------------------------------
-# 🎯 강조 폴리곤 레이어 (행정구역 & 내 땅)
-# --------------------------------------------------
 if admin_geojson:
-    folium.GeoJson(
-        admin_geojson,
-        style_function=lambda x: {
-            'fillColor': '#00FFFF', 'color': '#FF00FF', 'weight': 3, 'fillOpacity': 0.1
-        },
-        name="🎯 행정구역 넓은 경계선"
-    ).add_to(m)
+    folium.GeoJson(admin_geojson, style_function=lambda x: {'fillColor': '#00FFFF', 'color': '#FF00FF', 'weight': 3, 'fillOpacity': 0.1}, name="🎯 행정구역 넓은 경계선").add_to(m)
 
 if parcel_geojson:
-    folium.GeoJson(
-        parcel_geojson,
-        style_function=lambda x: {
-            'fillColor': '#FF0000', 'color': '#FFD700', 'weight': 6, 'fillOpacity': 0.3
-        },
-        name="👑 내 땅 지적도 (황금색 띠)"
-    ).add_to(m)
+    folium.GeoJson(parcel_geojson, style_function=lambda x: {'fillColor': '#FF0000', 'color': '#FFD700', 'weight': 6, 'fillOpacity': 0.3}, name="👑 내 땅 지적도 (황금색 띠)").add_to(m)
 
-if search_addr and (lat, lon) != (36.6573, 128.4528):
+if search_addr and coord:
     folium.Marker([lat, lon], popup=f"<b>{search_addr}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
 
 folium.LayerControl(position='topright').add_to(m)
