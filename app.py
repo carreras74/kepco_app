@@ -77,7 +77,7 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
     return []
 
 # ==========================================
-# 💡 3. 국토부 V-World 정밀 지도 모듈
+# 💡 3. 국토부 V-World 정밀 지도 모듈 (독립 로직)
 # ==========================================
 def get_vworld_coord(address):
     url = "http://api.vworld.kr/req/address"
@@ -97,9 +97,9 @@ def get_vworld_admin_polygon(lat, lon, address_text):
     try:
         res = requests.get(url, params=params).json()
         if res.get('response', {}).get('status') == 'OK':
-            return res['response']['result']['featureCollection']
+            return res['response']['result']['featureCollection'], layer
     except: pass
-    return None
+    return None, None
 
 def get_vworld_parcel_polygon(lat, lon):
     url = "http://api.vworld.kr/req/data"
@@ -133,6 +133,7 @@ if not df_gs.empty:
     gs_target_df['연계가능여부'] = (gs_target_df['변압기 여유용량'] > 0) & (gs_target_df['변전소 여유용량'] > 0)
     gs_target_df['연계상태'] = gs_target_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
     
+    # 💡 4번 기획: 최대로 여유용량 많은 곳부터 순서별 정렬 적용
     gs_target_df = gs_target_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False])
     gs_target_df['고유DL명'] = gs_target_df['시/구/군'] + " " + gs_target_df['DL명(읍면동)']
     gs_target_df = gs_target_df.drop_duplicates(subset=['고유DL명'], keep='first').reset_index(drop=True)
@@ -150,19 +151,18 @@ if not df_gs.empty:
         info = gs_target_df[gs_target_df['고유DL명'] == sel_dong].iloc[0]
         base_target = info['DL명(읍면동)'] + ("동" if not any(info['DL명(읍면동)'].endswith(s) for s in ['동', '읍', '면', '리']) else "")
         
-        # 💡 이중 공백 방지 로직 적용
-        if search_addr_top.strip():
-            full_addr_top = " ".join(filter(None, [gs_sido, info['시/구/군'], search_addr_top.strip()]))
-        else:
-            full_addr_top = " ".join(filter(None, [gs_sido, info['시/구/군'], base_target]))
+        # 💡 이중 공백 완벽 제거 로직
+        raw_addr_top = f"{gs_sido} {info['시/구/군']} {search_addr_top.strip() if search_addr_top.strip() else base_target}"
+        full_addr_top = re.sub(r'\s+', ' ', raw_addr_top).strip()
         
         coord_top = get_vworld_coord(full_addr_top)
         lat_top, lon_top = coord_top if coord_top else (36.5, 127.5)
         
-        admin_geo_top = get_vworld_admin_polygon(lat_top, lon_top, full_addr_top)
-        parcel_geo_top = get_vworld_parcel_polygon(lat_top, lon_top) if search_addr_top.strip() else None
+        admin_geo_top, layer_used_top = get_vworld_admin_polygon(lat_top, lon_top, full_addr_top)
+        has_jibun_top = bool(re.search(r'\d', full_addr_top))
+        parcel_geo_top = get_vworld_parcel_polygon(lat_top, lon_top) if has_jibun_top else None
 
-        m1 = folium.Map(location=[lat_top, lon_top], zoom_start=18 if parcel_geo_top else 14, max_zoom=22, tiles=None)
+        m1 = folium.Map(location=[lat_top, lon_top], zoom_start=19 if parcel_geo_top else 14, max_zoom=22, tiles=None)
         folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Satellite/{{z}}/{{y}}/{{x}}.jpeg', attr='VWorld', name='🛰️ 브이월드 위성지도', show=True, max_zoom=22).add_to(m1)
         folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Base/{{z}}/{{y}}/{{x}}.png', attr='VWorld', name='🗺️ 브이월드 일반지도', show=False, max_zoom=22).add_to(m1)
         folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Hybrid/{{z}}/{{y}}/{{x}}.png', attr='VWorld', name='🏷️ 하이브리드 오버레이', overlay=True, show=True, max_zoom=22).add_to(m1)
@@ -182,7 +182,7 @@ st.markdown("---")
 # ---------------------------------------------------------
 # 🎯 2부: 한전 API 실시간 다이렉트 지번 조회 (하부)
 # ---------------------------------------------------------
-st.header("🎯 2. 상세 주소 실시간 조회 (한전 API & 브이월드)")
+st.header("🎯 2. 상세 주소 실시간 조회 (한전 API & 브이월드 독립구동)")
 df_regions = get_region_codes()
 
 if not df_regions.empty:
@@ -196,22 +196,22 @@ if not df_regions.empty:
     m_cd, c_cd = target_reg['metroCd'], target_reg['cityCd']
 
     rt_col3, rt_col4, rt_col5 = st.columns(3)
-    with rt_col3: in_lidong = st.text_input("읍/면/동", placeholder="예: 아포읍", key="rt_dong")
+    with rt_col3: in_lidong = st.text_input("읍/면/동 (필수)", placeholder="예: 아포읍", key="rt_dong")
     with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리", key="rt_li")
-    with rt_col5: in_jibun = st.text_input("상세번지 (선택)", placeholder="예: 348 또는 산12", key="rt_jibun")
+    with rt_col5: in_jibun = st.text_input("상세번지 (선택, 산지는 '산' 기입)", placeholder="예: 348 또는 산12", key="rt_jibun")
 
-    if st.button("🚀 실시간 여유용량 조회하기", use_container_width=True):
+    if st.button("🚀 실시간 조회 및 지도 켜기", use_container_width=True):
         if not in_lidong:
             st.warning("읍/면/동 정보는 필수로 입력해주세요.")
         else:
             with st.spinner("데이터 조회 및 지도를 생성하는 중입니다..."):
                 
-                # 💡 한전 데이터와 무관하게 주소 문자열을 먼저 완벽하게 조합합니다 (이중 공백 방지)
-                address_parts = [rt_sido, rt_sigg, in_lidong.strip(), in_li.strip(), in_jibun.strip()]
-                full_addr_bot = " ".join(filter(None, address_parts))
+                # 💡 이중 공백 완벽 제거 로직
+                raw_addr_bot = f"{rt_sido} {rt_sigg} {in_lidong} {in_li} {in_jibun}"
+                full_addr_bot = re.sub(r'\s+', ' ', raw_addr_bot).strip()
                 
-                # 1. 한전 API 호출
-                raw_data = fetch_kepco_realtime(m_cd, c_cd, in_lidong, in_li, in_jibun)
+                # 1. 한전 API 데이터 호출
+                raw_data = fetch_kepco_realtime(m_cd, c_cd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
                 rt_info = None
                 
                 if raw_data:
@@ -233,13 +233,14 @@ if not df_regions.empty:
                 else:
                     st.warning("⚠️ 한전 실시간 API에서 해당 번지/동네에 대한 여유용량 데이터를 찾지 못했습니다. (지도는 아래에 정상 표출됩니다)")
 
-                # 💡 2. 한전 결과와 상관없이 지도는 무조건 호출 및 렌더링!
+                # 💡 2. 한전 데이터 결과와 상관없이 V-World 지도는 무조건 독립적으로 렌더링!
                 coord_bot = get_vworld_coord(full_addr_bot)
                 
                 if coord_bot:
                     rt_lat, rt_lon = coord_bot
-                    admin_geo_bot = get_vworld_admin_polygon(rt_lat, rt_lon, full_addr_bot)
-                    parcel_geo_bot = get_vworld_parcel_polygon(rt_lat, rt_lon) if in_jibun else None
+                    admin_geo_bot, layer_used_bot = get_vworld_admin_polygon(rt_lat, rt_lon, full_addr_bot)
+                    has_jibun_bot = bool(re.search(r'\d', full_addr_bot))
+                    parcel_geo_bot = get_vworld_parcel_polygon(rt_lat, rt_lon) if has_jibun_bot else None
                     
                     m2 = folium.Map(location=[rt_lat, rt_lon], zoom_start=19 if parcel_geo_bot else 15, max_zoom=22, tiles=None)
                     folium.TileLayer(tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Satellite/{{z}}/{{y}}/{{x}}.jpeg', attr='VWorld', name='🛰️ 브이월드 위성지도', show=True, max_zoom=22).add_to(m2)
@@ -251,7 +252,6 @@ if not df_regions.empty:
                     if admin_geo_bot: folium.GeoJson(admin_geo_bot, style_function=lambda x: {'fillColor': '#00FFFF', 'color': '#FF00FF', 'weight': 3, 'fillOpacity': 0.1}).add_to(m2)
                     if parcel_geo_bot: folium.GeoJson(parcel_geo_bot, style_function=lambda x: {'fillColor': '#FF0000', 'color': '#FFD700', 'weight': 6, 'fillOpacity': 0.3}).add_to(m2)
                     
-                    # 마커 팝업 텍스트 동적 생성
                     popup_text = f"<b>{full_addr_bot}</b>"
                     if rt_info is not None:
                         popup_text += f"<br>배전선로: {rt_info['DL명(읍면동)']}<br>여유용량: {rt_info['DL 여유용량']} MW"
@@ -263,4 +263,4 @@ if not df_regions.empty:
                     
                     st_folium(m2, width=1200, height=600, returned_objects=[], key=f"rt_map_{rt_lat}_{rt_lon}")
                 else:
-                    st.error(f"⚠️ '{full_addr_bot}' 주소의 위치를 브이월드에서 찾을 수 없습니다. 오타나 띄어쓰기를 확인해주세요.")
+                    st.error(f"⚠️ V-World 지도에서 '{full_addr_bot}' 주소를 찾을 수 없습니다. 오타를 확인해 주세요.")
