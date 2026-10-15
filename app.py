@@ -13,6 +13,36 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
 
 # ==========================================
+# 💡 [새로 추가된 기능] 모바일 스크롤 편의를 위한 붉은색 커스텀 스크롤바
+# ==========================================
+st.markdown("""
+    <style>
+    /* 크롬, 사파리, 모바일 브라우저용 스크롤바 디자인 */
+    ::-webkit-scrollbar {
+        width: 14px !important;  /* 모바일에서 손가락으로 잡기 쉽게 두께 확장 */
+        height: 14px !important;
+    }
+    ::-webkit-scrollbar-track {
+        background: #f1f1f1 !important; /* 스크롤바가 다니는 길(트랙) 색상 */
+    }
+    ::-webkit-scrollbar-thumb {
+        background-color: #FF0000 !important; /* 강렬한 붉은색 스크롤바 */
+        border-radius: 10px !important; /* 둥근 모서리 */
+        border: 2px solid #f1f1f1 !important; /* 스크롤바 주변 여백 */
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background-color: #CC0000 !important; /* 스크롤바를 잡았을 때 더 진한 붉은색으로 변경 */
+    }
+    
+    /* 파이어폭스 브라우저용 스크롤바 색상 */
+    * {
+        scrollbar-width: auto;
+        scrollbar-color: #FF0000 #f1f1f1;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ==========================================
 # 💡 API Keys & Settings
 # ==========================================
 VWORLD_KEY = "013A53E5-52AB-4FD2-AC9D-B7D4A85D5667"
