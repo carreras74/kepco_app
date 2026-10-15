@@ -13,34 +13,47 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
 
 # ==========================================
-# 💡 [스크롤바 풀림 방지 패치] 모바일에서 스크롤할 때도 절대 사라지거나 얇아지지 않도록 강력 고정
+# 💡 [스크롤바 영구 고정 패치] 스마트폰의 '자동 숨김' 기능을 CSS로 완벽 무력화
 # ==========================================
 st.markdown("""
     <style>
-    /* 스트림릿의 모든 컨테이너와 모바일 브라우저의 기본 스크롤 이벤트를 강제 덮어쓰기 */
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"], * {
-        scrollbar-width: auto !important;
-        scrollbar-color: #FF0000 #f1f1f1 !important;
+    /* 1. 화면 스크롤 설정을 auto(필요할때만 노출)에서 scroll(항상 노출)로 강제 변경 */
+    html, body, [data-testid="stAppViewContainer"], .main {
+        overflow-y: scroll !important; 
+        -webkit-overflow-scrolling: touch !important;
     }
     
-    /* 스크롤 중 원래 모양으로 돌아가는 현상(Repaint) 원천 차단 */
-    *::-webkit-scrollbar {
-        width: 26px !important;  /* 아주 굵은 사이즈 유지 */
+    /* 2. 스크롤바의 모든 요소가 투명해지는 것을 막고 항상 보이도록 강제 고정 */
+    ::-webkit-scrollbar {
+        width: 26px !important;  
         height: 26px !important;
         background-color: #f1f1f1 !important;
-        -webkit-appearance: none !important; /* 모바일 OS 기본 스크롤바 무시 */
+        -webkit-appearance: none !important; 
         display: block !important; 
+        opacity: 1 !important;
+        visibility: visible !important;
     }
-    *::-webkit-scrollbar-track {
-        background: #f1f1f1 !important; 
+    
+    /* 스크롤이 다니는 트랙(길) */
+    ::-webkit-scrollbar-track {
+        background-color: #f1f1f1 !important; 
+        border-left: 1px solid #dcdcdc !important; /* 구분선 추가로 확실히 보이게 */
+        display: block !important; 
+        opacity: 1 !important;
+        visibility: visible !important;
     }
-    *::-webkit-scrollbar-thumb {
-        background-color: #FF0000 !important; /* 강렬한 붉은색 */
+    
+    /* 붉은색 스크롤바 손잡이 */
+    ::-webkit-scrollbar-thumb {
+        background-color: #FF0000 !important; 
         border-radius: 12px !important; 
         border: 4px solid #f1f1f1 !important; 
+        display: block !important; 
+        opacity: 1 !important;
+        visibility: visible !important;
     }
-    /* 스크롤바를 터치해서 움직이는 순간(active)에도 색상과 굵기 유지 */
-    *::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:active {
+    
+    ::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active {
         background-color: #CC0000 !important; 
     }
     </style>
@@ -217,7 +230,7 @@ if not df_regions.empty:
 st.markdown("---")
 
 # ==========================================
-# 🗺️ 3. 브이월드 정밀 지도 (스트림릿 영구 에러 차단형 WMS 모드)
+# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱
 # ==========================================
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
 st.markdown("데이터 차단을 완벽 우회하는 **'지적도 유리창(WMS) 기술'**을 적용했습니다. 내 땅 한가운데에 빨간 핀이 꽂히고 주변 지적도 선이 모두 선명하게 나타납니다.")
@@ -258,7 +271,6 @@ if search_addr:
                 attr='VWorld Hybrid', name='🏷️ 글자 오버레이', overlay=True, control=True, show=True, max_zoom=22
             ).add_to(m)
 
-            # 💡 3. 핵심기술: 에러나던 GeoJSON 데이터를 버리고, WMS 투명 유리창 타일로 지적도 선을 그려냅니다!
             if has_jibun:
                 folium.WmsTileLayer(
                     url=f"https://api.vworld.kr/req/wms?key={VWORLD_KEY}&domain={DOMAIN}",
@@ -272,7 +284,6 @@ if search_addr:
                     show=True
                 ).add_to(m)
             else:
-                # 번지수가 없으면 행정구역(읍/면/동/리) 유리창을 씌웁니다.
                 layer_name = "lt_c_adri_info" if "리" in search_addr.split()[-1] or "리 " in search_addr else "lt_c_ademd_info"
                 folium.WmsTileLayer(
                     url=f"https://api.vworld.kr/req/wms?key={VWORLD_KEY}&domain={DOMAIN}",
@@ -286,7 +297,6 @@ if search_addr:
                     show=True
                 ).add_to(m)
 
-            # 해당 위치 한가운데 정확히 핀 꽂기
             folium.Marker([lat, lon], popup=f"<b>{search_addr}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
             folium.LayerControl(position='topright').add_to(m)
             
