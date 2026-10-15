@@ -183,10 +183,10 @@ else: st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 (인접 지번 자동탐색)
+# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 (지능형 인접지번 탐색)
 # ---------------------------------------------------------
 st.header("🎯 2. 상세 주소 실시간 1건 조회 (한전 여유용량 확인)")
-st.markdown("한전 DB에 번지수가 누락되어 있을 경우, **파이썬이 스스로 주변 10개 인접 번지수를 무작위 탐색하여 선로를 찾아냅니다.**")
+st.markdown("한전 DB에 번지수가 누락된 경우, **대표 지번(본번) 및 앞뒤 이웃 지번 10개씩을 기계가 우선순위로 추적**하여 선로를 찾아냅니다.")
 
 df_regions = get_region_codes()
 
@@ -200,38 +200,51 @@ if not df_regions.empty:
     rt_col3, rt_col4, rt_col5 = st.columns(3)
     with rt_col3: in_lidong = st.text_input("읍/면/동 (필수)", placeholder="예: 아포읍")
     with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리")
-    with rt_col5: in_jibun = st.text_input("상세번지 (선택)", placeholder="예: 348 또는 산12")
+    with rt_col5: in_jibun = st.text_input("상세번지 (선택)", placeholder="예: 122-3 또는 산12")
 
     if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_width=True):
         if not in_lidong: st.warning("읍/면/동을 입력해주세요.")
         else:
             with st.spinner("한전 서버 조회 및 스마트 인접 지번 탐색 중..."):
-                # 💡 1차: 정확한 지번 검색
+                # 💡 1차: 입력한 원본 지번 검색 (예: 122-3)
                 raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), in_jibun.strip())
                 
-                # 💡 2차: 선생님 아이디어 적용! (인접 10개 번지 자동 탐색)
+                # 💡 2차: 1차 실패 시 아래쪽(-) 번지수 우선으로 앞뒤 10개씩 공격적 탐색
                 if not raw_data and in_jibun:
-                    # 번지수에서 숫자만 추출 (예: '산12' -> '12', '348-1' -> '348')
-                    base_num_str = re.sub(r'[^0-9]', '', in_jibun)
+                    is_san = "산" in in_jibun
+                    clean_jibun = in_jibun.replace("산", "").strip()
+                    
+                    # '122-3' 이라면 '122'만 남김
+                    if "-" in clean_jibun:
+                        base_num_str = clean_jibun.split("-")[0]
+                    else:
+                        base_num_str = clean_jibun
+                        
                     if base_num_str.isdigit():
                         base_num = int(base_num_str)
-                        # 앞뒤로 5개씩 번호를 돌리면서 탐색 배열 생성
-                        offsets = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5]
+                        # 선생님 지시 반영: 아래쪽 번호(-1, -2...)를 꼼꼼하게 먼저 찌르도록 순서 조정 & 범위 10개로 확대
+                        offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -7, 7, -8, 8, -9, 9, -10, 10]
                         
                         for offset in offsets:
+                            if offset == 0 and "-" not in clean_jibun:
+                                continue
+                                
                             nearby_j = str(base_num + offset)
-                            if "산" in in_jibun: nearby_j = "산" + nearby_j
+                            if is_san: nearby_j = "산" + nearby_j
                             
                             raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), nearby_j)
                             if raw_data:
-                                st.success(f"💡 정확한 지번({in_jibun})이 한전 DB에 누락되어, 인접한 **[{nearby_j}번지]** 기준으로 연결 가능한 선로를 자동 추적했습니다!")
+                                if offset == 0:
+                                    st.success(f"💡 한전 DB에 '{in_jibun}'가 등록되지 않아, 부번을 제외한 대표 지번 **[{nearby_j}번지]** 기준으로 선로를 찾아냈습니다!")
+                                else:
+                                    st.success(f"💡 한전 DB에 해당 번지가 누락되어, 인접한 주변 지번 **[{nearby_j}번지]** 기준으로 연결 가능한 선로를 추적했습니다!")
                                 break
 
-                # 💡 3차: 인접 지번도 없으면 해당 동/리 전체 검색
+                # 💡 3차: 반경 10개 인접 지번도 없으면 해당 동/리 전체 검색
                 if not raw_data:
                     raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), "")
                     if raw_data and in_jibun:
-                        st.info(f"💡 주변 번지수까지 탐색했으나 한전 DB에 미등록된 지역입니다. 대신 **'{in_lidong} {in_li}' 전체의 배전선로 데이터**를 모두 불러왔습니다.")
+                        st.info(f"💡 반경 10개 지번까지 탐색했으나 한전 DB에 미등록된 오지입니다. 대신 **'{in_lidong} {in_li}' 전체의 배전선로 데이터**를 모두 불러왔습니다.")
 
                 if raw_data:
                     rt_df = pd.DataFrame(raw_data)
