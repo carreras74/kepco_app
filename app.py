@@ -13,28 +13,35 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
 
 # ==========================================
-# 💡 [새로 추가된 기능] 모바일 스크롤 편의를 위한 붉은색 커스텀 스크롤바
+# 💡 [업그레이드] 모바일 스크롤바 절대 안 사라짐 + 초대형 굵기 적용
 # ==========================================
 st.markdown("""
     <style>
-    /* 크롬, 사파리, 모바일 브라우저용 스크롤바 디자인 */
-    ::-webkit-scrollbar {
-        width: 14px !important;  /* 모바일에서 손가락으로 잡기 쉽게 두께 확장 */
-        height: 14px !important;
-    }
-    ::-webkit-scrollbar-track {
-        background: #f1f1f1 !important; /* 스크롤바가 다니는 길(트랙) 색상 */
-    }
-    ::-webkit-scrollbar-thumb {
-        background-color: #FF0000 !important; /* 강렬한 붉은색 스크롤바 */
-        border-radius: 10px !important; /* 둥근 모서리 */
-        border: 2px solid #f1f1f1 !important; /* 스크롤바 주변 여백 */
-    }
-    ::-webkit-scrollbar-thumb:hover {
-        background-color: #CC0000 !important; /* 스크롤바를 잡았을 때 더 진한 붉은색으로 변경 */
+    /* 스마트폰에서 스크롤바가 사라지는 것을 막기 위해 항상 스크롤 공간을 열어둡니다 */
+    html, body, [data-testid="stAppViewContainer"], .main {
+        overflow-y: scroll !important; 
     }
     
-    /* 파이어폭스 브라우저용 스크롤바 색상 */
+    /* 크롬, 사파리, 모바일 브라우저용 스크롤바 디자인 */
+    ::-webkit-scrollbar {
+        width: 26px !important;  /* 💡 14px -> 26px로 대폭 확대 (아주 굵게) */
+        height: 26px !important;
+        background-color: #f1f1f1 !important;
+        display: block !important; /* 💡 숨김 방지 강제 고정 */
+    }
+    ::-webkit-scrollbar-track {
+        background: #f1f1f1 !important; 
+    }
+    ::-webkit-scrollbar-thumb {
+        background-color: #FF0000 !important; /* 강렬한 붉은색 */
+        border-radius: 12px !important; /* 둥근 모서리 */
+        border: 4px solid #f1f1f1 !important; /* 스크롤바 테두리 여백 */
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background-color: #CC0000 !important; 
+    }
+    
+    /* 파이어폭스 브라우저용 */
     * {
         scrollbar-width: auto;
         scrollbar-color: #FF0000 #f1f1f1;
@@ -50,7 +57,7 @@ KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d" 
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
-# 💡 디버그 모드 (끄라고 하실 때까지 유지합니다!)
+# 💡 디버그 모드 
 st.sidebar.title("🛠️ 시스템 도구")
 DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=True)
 
@@ -115,7 +122,6 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
 # 🗺️ 3부: 카카오 좌표 변환 모듈 (방화벽 영향 없음)
 # ==========================================
 def get_kakao_coord(address):
-    """해외 차단 없는 카카오로 '위도/경도'만 뽑아냅니다."""
     debug_log = []
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
     
@@ -214,7 +220,7 @@ if not df_regions.empty:
 st.markdown("---")
 
 # ==========================================
-# 🗺️ 3. 브이월드 정밀 지도 (스트림릿 영구 에러 차단형 WMS 모드)
+# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱
 # ==========================================
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
 st.markdown("데이터 차단을 완벽 우회하는 **'지적도 유리창(WMS) 기술'**을 적용했습니다. 내 땅 한가운데에 빨간 핀이 꽂히고 주변 지적도 선이 모두 선명하게 나타납니다.")
@@ -255,8 +261,6 @@ if search_addr:
                 attr='VWorld Hybrid', name='🏷️ 글자 오버레이', overlay=True, control=True, show=True, max_zoom=22
             ).add_to(m)
 
-            # 💡 3. 핵심기술: 에러나던 GeoJSON 데이터를 버리고, WMS 투명 유리창 타일로 지적도 선을 그려냅니다!
-            # (이 방식은 선생님의 PC가 이미지를 직수입하므로 국토부 방화벽에 막히지 않습니다)
             if has_jibun:
                 folium.WmsTileLayer(
                     url=f"https://api.vworld.kr/req/wms?key={VWORLD_KEY}&domain={DOMAIN}",
@@ -270,7 +274,6 @@ if search_addr:
                     show=True
                 ).add_to(m)
             else:
-                # 번지수가 없으면 행정구역(읍/면/동/리) 유리창을 씌웁니다.
                 layer_name = "lt_c_adri_info" if "리" in search_addr.split()[-1] or "리 " in search_addr else "lt_c_ademd_info"
                 folium.WmsTileLayer(
                     url=f"https://api.vworld.kr/req/wms?key={VWORLD_KEY}&domain={DOMAIN}",
@@ -284,7 +287,6 @@ if search_addr:
                     show=True
                 ).add_to(m)
 
-            # 해당 위치 한가운데 정확히 핀 꽂기
             folium.Marker([lat, lon], popup=f"<b>{search_addr}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
             folium.LayerControl(position='topright').add_to(m)
             
