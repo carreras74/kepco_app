@@ -13,18 +13,15 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
 
 # ==========================================
-# 💡 [스크롤바 영구 고정 패치] 스마트폰의 '자동 숨김' 기능을 CSS로 완벽 무력화
+# 💡 스크롤바 영구 고정 패치 (절대 사라지지 않는 붉은색 스크롤바)
 # ==========================================
 st.markdown("""
     <style>
-    /* 1. 화면 스크롤 설정을 auto(필요할때만 노출)에서 scroll(항상 노출)로 강제 변경 */
-    html, body, [data-testid="stAppViewContainer"], .main {
-        overflow-y: scroll !important; 
-        -webkit-overflow-scrolling: touch !important;
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"], * {
+        scrollbar-width: auto !important;
+        scrollbar-color: #FF0000 #f1f1f1 !important;
     }
-    
-    /* 2. 스크롤바의 모든 요소가 투명해지는 것을 막고 항상 보이도록 강제 고정 */
-    ::-webkit-scrollbar {
+    *::-webkit-scrollbar {
         width: 26px !important;  
         height: 26px !important;
         background-color: #f1f1f1 !important;
@@ -33,18 +30,14 @@ st.markdown("""
         opacity: 1 !important;
         visibility: visible !important;
     }
-    
-    /* 스크롤이 다니는 트랙(길) */
-    ::-webkit-scrollbar-track {
+    *::-webkit-scrollbar-track {
         background-color: #f1f1f1 !important; 
-        border-left: 1px solid #dcdcdc !important; /* 구분선 추가로 확실히 보이게 */
+        border-left: 1px solid #dcdcdc !important; 
         display: block !important; 
         opacity: 1 !important;
         visibility: visible !important;
     }
-    
-    /* 붉은색 스크롤바 손잡이 */
-    ::-webkit-scrollbar-thumb {
+    *::-webkit-scrollbar-thumb {
         background-color: #FF0000 !important; 
         border-radius: 12px !important; 
         border: 4px solid #f1f1f1 !important; 
@@ -52,8 +45,7 @@ st.markdown("""
         opacity: 1 !important;
         visibility: visible !important;
     }
-    
-    ::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active {
+    *::-webkit-scrollbar-thumb:hover, *::-webkit-scrollbar-thumb:active {
         background-color: #CC0000 !important; 
     }
     </style>
@@ -67,7 +59,6 @@ KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d" 
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
-# 💡 디버그 모드 
 st.sidebar.title("🛠️ 시스템 도구")
 DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=True)
 
@@ -118,18 +109,18 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
     if li: params["addrLi"] = li
     if jibun: params["addrJibun"] = jibun
 
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             res = requests.get(url, params=params, timeout=10)
             if res.status_code == 200:
                 data = res.json().get("data", [])
                 if data: return data
         except: pass
-        time.sleep(1)
+        time.sleep(0.5)
     return []
 
 # ==========================================
-# 🗺️ 3부: 카카오 좌표 변환 모듈 (방화벽 영향 없음)
+# 🗺️ 3부: 카카오 좌표 변환 모듈 
 # ==========================================
 def get_kakao_coord(address):
     debug_log = []
@@ -180,7 +171,6 @@ if not df_gs.empty:
     gs_target_df['연계가능여부'] = (gs_target_df['변압기 여유용량'] > 0) & (gs_target_df['변전소 여유용량'] > 0)
     gs_target_df['연계상태'] = gs_target_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
 
-    # 최대 여유용량 순 정렬
     gs_target_df = gs_target_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False])
     gs_target_df['고유DL명'] = gs_target_df['시/구/군'] + " " + gs_target_df['DL명(읍면동)']
     gs_target_df = gs_target_df.drop_duplicates(subset=['고유DL명'], keep='first').reset_index(drop=True)
@@ -193,9 +183,11 @@ else: st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 🎯 2. 한전 API 실시간 다이렉트 지번 조회
+# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 (인접 지번 자동탐색)
 # ---------------------------------------------------------
 st.header("🎯 2. 상세 주소 실시간 1건 조회 (한전 여유용량 확인)")
+st.markdown("한전 DB에 번지수가 누락되어 있을 경우, **파이썬이 스스로 주변 10개 인접 번지수를 무작위 탐색하여 선로를 찾아냅니다.**")
+
 df_regions = get_region_codes()
 
 if not df_regions.empty:
@@ -213,8 +205,34 @@ if not df_regions.empty:
     if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_width=True):
         if not in_lidong: st.warning("읍/면/동을 입력해주세요.")
         else:
-            with st.spinner("한전 서버에서 해당 지번 1건을 실시간 조회 중입니다..."):
+            with st.spinner("한전 서버 조회 및 스마트 인접 지번 탐색 중..."):
+                # 💡 1차: 정확한 지번 검색
                 raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), in_jibun.strip())
+                
+                # 💡 2차: 선생님 아이디어 적용! (인접 10개 번지 자동 탐색)
+                if not raw_data and in_jibun:
+                    # 번지수에서 숫자만 추출 (예: '산12' -> '12', '348-1' -> '348')
+                    base_num_str = re.sub(r'[^0-9]', '', in_jibun)
+                    if base_num_str.isdigit():
+                        base_num = int(base_num_str)
+                        # 앞뒤로 5개씩 번호를 돌리면서 탐색 배열 생성
+                        offsets = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5]
+                        
+                        for offset in offsets:
+                            nearby_j = str(base_num + offset)
+                            if "산" in in_jibun: nearby_j = "산" + nearby_j
+                            
+                            raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), nearby_j)
+                            if raw_data:
+                                st.success(f"💡 정확한 지번({in_jibun})이 한전 DB에 누락되어, 인접한 **[{nearby_j}번지]** 기준으로 연결 가능한 선로를 자동 추적했습니다!")
+                                break
+
+                # 💡 3차: 인접 지번도 없으면 해당 동/리 전체 검색
+                if not raw_data:
+                    raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), "")
+                    if raw_data and in_jibun:
+                        st.info(f"💡 주변 번지수까지 탐색했으나 한전 DB에 미등록된 지역입니다. 대신 **'{in_lidong} {in_li}' 전체의 배전선로 데이터**를 모두 불러왔습니다.")
+
                 if raw_data:
                     rt_df = pd.DataFrame(raw_data)
                     rt_df = rt_df.rename(columns={"dlNm": "DL명(읍면동)", "vol3": "DL 여유용량", "vol2": "변압기 여유용량", "vol1": "변전소 여유용량", "substNm": "변전소명"})
@@ -225,7 +243,7 @@ if not df_regions.empty:
                     rt_df = rt_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False]).drop_duplicates(subset=['DL명(읍면동)']).reset_index(drop=True)
                     rt_df["순위"] = range(1, len(rt_df) + 1)
                     st.dataframe(rt_df[["순위", "연계상태", "DL명(읍면동)", "DL 여유용량", "변압기 여유용량", "변전소 여유용량", "변전소명"]], use_container_width=True, hide_index=True)
-                else: st.warning("⚠️ 한전 실시간 API에서 해당 번지/동네에 대한 여유용량 데이터를 찾지 못했습니다.")
+                else: st.warning("⚠️ 한전 실시간 API에 해당 지역의 데이터가 아예 존재하지 않습니다.")
 
 st.markdown("---")
 
