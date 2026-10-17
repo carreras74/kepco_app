@@ -8,6 +8,7 @@ import os
 import time
 import re
 import gspread
+import base64
 from oauth2client.service_account import ServiceAccountCredentials
 
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
@@ -59,8 +60,9 @@ KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d" 
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
+# 선생님 지시사항: 디버그 모드 절대 빼지 않기
 st.sidebar.title("🛠️ 시스템 도구")
-DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=False) # 평소엔 꺼두도록 기본값 False로 변경
+DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=True)
 
 # ==========================================
 # 📊 기획 1, 3, 4번: 구글 시트 연동 및 랭킹 정렬
@@ -197,17 +199,32 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
+# 💡 [핵심 기술] 깃허브 폴더에 있는 사진 파일을 파이썬이 직접 읽어 Base64로 강제 변환
+def get_image_base64(image_path):
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode('utf-8')
+    except Exception as e:
+        return ""
 
 # ==========================================
 # 🖥️ 앱 화면 구성 시작
 # ==========================================
 
-# 💡 선생님의 구글 드라이브 다이렉트 이미지 URL!
-BG_IMAGE_URL = "https://drive.google.com/uc?export=view&id=1h44gZEjCQn12X7Ogi3cVCYJGurCPok3l"
+# 깃허브에 올려두신 파일 이름을 정확히 매칭!
+image_filename = "header_bg.png" 
+img_base64 = get_image_base64(image_filename)
+
+if img_base64:
+    # 깃허브 파일을 성공적으로 읽었을 때
+    bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7)), url('data:image/png;base64,{img_base64}') center/cover no-repeat;"
+else:
+    # 파일을 못 찾았을 때 비상용 짙은 남색 배경
+    bg_style = "background: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7)); background-color: #2c3e50;"
 
 st.markdown(f"""
     <div style="
-        background: linear-gradient(rgba(0, 0, 0, 0.3), rgba(0, 0, 0, 0.6)), url('{BG_IMAGE_URL}') center/cover no-repeat;
+        {bg_style}
         padding: 80px 20px;
         border-radius: 15px;
         margin-bottom: 30px;
@@ -219,7 +236,6 @@ st.markdown(f"""
         </h1>
     </div>
 """, unsafe_allow_html=True)
-
 
 # ---------------------------------------------------------
 # 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 
