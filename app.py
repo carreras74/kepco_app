@@ -59,7 +59,6 @@ KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d" 
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
-# 💡 디버그 모드 (선생님 허락 전까지 절대 안 뺍니다!)
 st.sidebar.title("🛠️ 시스템 도구")
 DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=True)
 
@@ -87,7 +86,7 @@ def load_gsheets_data():
     except: return pd.DataFrame()
 
 # ==========================================
-# 🎯 기획 2번: 한전 앱 노가다 해방 (실시간 조회)
+# 🎯 기획 2번: 한전 실시간 코어 기능
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_region_codes():
@@ -120,35 +119,86 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
         time.sleep(0.5)
     return []
 
-# ==========================================
-# 🗺️ 3부: 카카오 좌표 변환 모듈 
-# ==========================================
-def get_kakao_coord(address):
-    debug_log = []
-    headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
+def match_kepco_region_code(sido, sigg, df_regions):
+    """카카오의 '경북'을 한전의 '경상북도'로 변환하여 코드를 찾습니다."""
+    SIDO_MAP = {
+        "서울": "서울특별시", "부산": "부산광역시", "대구": "대구광역시", "인천": "인천광역시",
+        "광주": "광주광역시", "대전": "대전광역시", "울산": "울산광역시", "세종특별자치시": "세종특별자치시", "세종": "세종특별자치시",
+        "경기": "경기도", "강원": "강원특별자치도", "강원특별자치도": "강원특별자치도",
+        "충북": "충청북도", "충남": "충청남도", "전북": "전라북도", "전북특별자치도": "전라북도", "전라북도":"전라북도",
+        "전남": "전라남도", "경북": "경상북도", "경남": "경상남도", "제주": "제주특별자치도", "제주특별자치도": "제주특별자치도"
+    }
+    mapped_sido = SIDO_MAP.get(sido, sido)
+    clean_sigg = sigg.replace(" ", "")
     
+    sido_df = df_regions[df_regions['시도'] == mapped_sido]
+    if sido_df.empty:
+        sido_df = df_regions[df_regions['시도'].str.contains(mapped_sido[:2])]
+        
+    for idx, row in sido_df.iterrows():
+        if row['시군구'].replace(" ", "") == clean_sigg:
+            return row['metroCd'], row['cityCd']
+            
+    for idx, row in sido_df.iterrows():
+        if clean_sigg in row['시군구'].replace(" ", "") or row['시군구'].replace(" ", "") in clean_sigg:
+            return row['metroCd'], row['cityCd']
+            
+    return None, None
+
+# ==========================================
+# 🗺️ 3부: 카카오 주소 자동 번역기 (신주소 -> 구주소)
+# ==========================================
+def get_jibun_from_kakao(address):
+    """신주소를 넣어도 카카오 API가 읍/면/동/리/상세번지를 완벽하게 발라냅니다."""
+    headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
     url_addr = "https://dapi.kakao.com/v2/local/search/address.json"
     try:
-        r1 = requests.get(url_addr, headers=headers, params={"query": address}, timeout=5)
-        debug_log.append(("카카오 주소검색", r1.status_code, r1.text[:300]))
-        res = r1.json()
+        res = requests.get(url_addr, headers=headers, params={"query": address}, timeout=5).json()
         if res.get('documents'):
-            return float(res['documents'][0]['y']), float(res['documents'][0]['x']), debug_log
-    except Exception as e:
-        debug_log.append(("카카오 주소검색 에러", None, str(e)))
-
+            addr_obj = res['documents'][0].get('address') # 무조건 지번(구주소) 객체 가져오기
+            if addr_obj:
+                sido = addr_obj.get('region_1depth_name', '')
+                sigg = addr_obj.get('region_2depth_name', '')
+                region_3 = addr_obj.get('region_3depth_name', '')
+                parts = region_3.split()
+                lidong = parts[0] if len(parts) > 0 else ''
+                li = parts[1] if len(parts) > 1 else ''
+                
+                main_no = addr_obj.get('main_address_no', '')
+                sub_no = addr_obj.get('sub_address_no', '')
+                jibun = main_no
+                if sub_no: jibun += f"-{sub_no}"
+                if addr_obj.get('mountain_yn') == 'Y': jibun = "산" + jibun
+                
+                full_jibun = f"{sido} {sigg} {lidong} {li} {jibun}".strip()
+                full_jibun = re.sub(r'\s+', ' ', full_jibun)
+                
+                return full_jibun, sido, sigg, lidong, li, jibun
+    except: pass
+    
+    # 2차: 일반 키워드 검색 시 (좌표용)
     url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
     try:
-        r2 = requests.get(url_kw, headers=headers, params={"query": address}, timeout=5)
-        debug_log.append(("카카오 키워드검색", r2.status_code, r2.text[:300]))
-        res2 = r2.json()
+        res2 = requests.get(url_kw, headers=headers, params={"query": address}, timeout=5).json()
         if res2.get('documents'):
-            return float(res2['documents'][0]['y']), float(res2['documents'][0]['x']), debug_log
-    except Exception as e:
-        debug_log.append(("카카오 키워드검색 에러", None, str(e)))
+            return res2['documents'][0]['address_name'], "", "", "", "", ""
+    except: pass
     
-    return None, None, debug_log
+    return None, None, None, None, None, None
 
+def get_kakao_coord(address):
+    headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
+    url_addr = "https://dapi.kakao.com/v2/local/search/address.json"
+    try:
+        res = requests.get(url_addr, headers=headers, params={"query": address}, timeout=5).json()
+        if res.get('documents'): return float(res['documents'][0]['y']), float(res['documents'][0]['x'])
+    except: pass
+    url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
+    try:
+        res2 = requests.get(url_kw, headers=headers, params={"query": address}, timeout=5).json()
+        if res2.get('documents'): return float(res2['documents'][0]['y']), float(res2['documents'][0]['x'])
+    except: pass
+    return None, None
 
 # ==========================================
 # 🖥️ 앱 화면 구성 시작
@@ -184,113 +234,134 @@ else: st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 (지능형 인접지번 탐색)
+# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 (신주소 변환기 탑재)
 # ---------------------------------------------------------
 st.header("🎯 2. 상세 주소 실시간 1건 조회 (한전 여유용량 확인)")
-st.markdown("한전 DB에 번지수가 누락된 경우, **대표 지번(본번) 및 앞뒤 이웃 지번 10개씩을 기계가 우선순위로 추적**하여 선로를 찾아냅니다.")
+st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다. (조회 시 아래 3번 지도가 자동 완성됩니다)")
 
 df_regions = get_region_codes()
 
-if not df_regions.empty:
-    rt_col1, rt_col2 = st.columns(2)
-    with rt_col1: rt_sido = st.selectbox("📍 실시간 조회 시/도", sorted(df_regions['시도'].unique().tolist()), key="rt_sido_bot")
-    with rt_col2: rt_sigg = st.selectbox("🏢 실시간 조회 시/군/구", sorted(df_regions[df_regions['시도'] == rt_sido]['시군구'].unique().tolist()), key="rt_sigg_bot")
+search_mode = st.radio("검색 방식 선택", ["📝 통합 주소 검색 (신주소 자동변환 추천)", "🛠️ 직접 선택 (수동 구주소)"], horizontal=True)
 
-    target_reg = df_regions[(df_regions['시도'] == rt_sido) & (df_regions['시군구'] == rt_sigg)].iloc[0]
+integrated_addr = ""
+rt_sido, rt_sigg, in_lidong, in_li, in_jibun = "", "", "", "", ""
 
-    rt_col3, rt_col4, rt_col5 = st.columns(3)
-    with rt_col3: in_lidong = st.text_input("읍/면/동 (필수)", placeholder="예: 아포읍")
-    with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리")
-    with rt_col5: in_jibun = st.text_input("상세번지 (선택)", placeholder="예: 122-3 또는 산12")
+if "통합" in search_mode:
+    integrated_addr = st.text_input("🔍 조회할 주소를 입력하세요 (도로명 / 지번 모두 완벽 지원)", placeholder="예: 김천시 아포대로 123 또는 아포읍 대성리 348")
+else:
+    if not df_regions.empty:
+        rt_col1, rt_col2 = st.columns(2)
+        with rt_col1: rt_sido = st.selectbox("📍 시/도", sorted(df_regions['시도'].unique().tolist()), key="rt_sido_bot")
+        with rt_col2: rt_sigg = st.selectbox("🏢 시/군/구", sorted(df_regions[df_regions['시도'] == rt_sido]['시군구'].unique().tolist()), key="rt_sigg_bot")
 
-    if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_width=True):
-        if not in_lidong: st.warning("읍/면/동을 입력해주세요.")
-        else:
-            with st.spinner("한전 서버 조회 및 스마트 인접 지번 탐색 중..."):
-                raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), in_jibun.strip())
+        rt_col3, rt_col4, rt_col5 = st.columns(3)
+        with rt_col3: in_lidong = st.text_input("읍/면/동 (필수)", placeholder="예: 아포읍")
+        with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리")
+        with rt_col5: in_jibun = st.text_input("상세번지 (선택)", placeholder="예: 348 또는 산12")
+
+if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_width=True):
+    with st.spinner("주소를 분석하고 한전 서버를 탐색 중입니다..."):
+        auto_address = ""
+        
+        # 💡 [핵심] 통합 주소 입력 시 카카오를 통한 구주소 분해 로직
+        if "통합" in search_mode:
+            if not integrated_addr:
+                st.warning("주소를 입력해주세요.")
+                st.stop()
                 
-                if not raw_data and in_jibun:
-                    is_san = "산" in in_jibun
-                    clean_jibun = in_jibun.replace("산", "").strip()
+            full_jibun, p_sido, p_sigg, p_lidong, p_li, p_jibun = get_jibun_from_kakao(integrated_addr)
+            
+            if not p_sido:
+                st.error("⚠️ 입력하신 주소의 구주소(지번) 변환에 실패했습니다. 올바른 주소인지 확인해주세요.")
+                st.stop()
+                
+            st.success(f"🔄 **구주소 자동 번역 완료:** {full_jibun}")
+            rt_sido, rt_sigg, in_lidong, in_li, in_jibun = p_sido, p_sigg, p_lidong, p_li, p_jibun
+            auto_address = full_jibun # 3번 지도로 넘겨줄 최종 주소
+        else:
+            if not in_lidong:
+                st.warning("읍/면/동을 입력해주세요.")
+                st.stop()
+            address_parts = [rt_sido, rt_sigg, in_lidong.strip(), in_li.strip(), in_jibun.strip()]
+            auto_address = " ".join([p for p in address_parts if p])
+
+        # 💡 3번 지도에 자동 연동시키기 위한 세션 저장
+        st.session_state['auto_map_address'] = auto_address
+
+        # 한전 지역코드 매칭
+        target_metroCd, target_cityCd = match_kepco_region_code(rt_sido, rt_sigg, df_regions)
+        if not target_metroCd:
+            st.error(f"⚠️ 한전 DB에서 '{rt_sido} {rt_sigg}' 지역을 찾을 수 없습니다.")
+            st.stop()
+
+        # 1차 탐색
+        raw_data = fetch_kepco_realtime(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
+        
+        # 2차 스마트 인접 탐색 (선생님 로직 적용)
+        if not raw_data and in_jibun:
+            is_san = "산" in in_jibun
+            clean_jibun = in_jibun.replace("산", "").strip()
+            if "-" in clean_jibun:
+                base_num_str = clean_jibun.split("-")[0]
+            else:
+                base_num_str = clean_jibun
+                
+            if base_num_str.isdigit():
+                base_num = int(base_num_str)
+                offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -7, 7, -8, 8, -9, 9, -10, 10]
+                
+                for offset in offsets:
+                    if offset == 0 and "-" not in clean_jibun:
+                        continue
+                    nearby_j = str(base_num + offset)
+                    if is_san: nearby_j = "산" + nearby_j
                     
-                    if "-" in clean_jibun:
-                        base_num_str = clean_jibun.split("-")[0]
-                    else:
-                        base_num_str = clean_jibun
+                    raw_data = fetch_kepco_realtime(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), nearby_j)
+                    if raw_data:
+                        if offset == 0:
+                            st.success(f"💡 한전 DB에 '{in_jibun}'가 누락되어, 부번을 뗀 대표 지번 **[{nearby_j}번지]** 기준으로 선로를 찾았습니다!")
+                        else:
+                            st.success(f"💡 한전 DB에 해당 번지가 누락되어, 인접 지번 **[{nearby_j}번지]** 기준으로 연결 가능한 선로를 추적했습니다!")
+                        break
                         
-                    if base_num_str.isdigit():
-                        base_num = int(base_num_str)
-                        offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -7, 7, -8, 8, -9, 9, -10, 10]
-                        
-                        for offset in offsets:
-                            if offset == 0 and "-" not in clean_jibun:
-                                continue
-                                
-                            nearby_j = str(base_num + offset)
-                            if is_san: nearby_j = "산" + nearby_j
-                            
-                            raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), nearby_j)
-                            if raw_data:
-                                if offset == 0:
-                                    st.success(f"💡 한전 DB에 '{in_jibun}'가 등록되지 않아, 부번을 제외한 대표 지번 **[{nearby_j}번지]** 기준으로 선로를 찾아냈습니다!")
-                                else:
-                                    st.success(f"💡 한전 DB에 해당 번지가 누락되어, 인접한 주변 지번 **[{nearby_j}번지]** 기준으로 연결 가능한 선로를 추적했습니다!")
-                                break
+        # 3차 전체 탐색
+        if not raw_data:
+            raw_data = fetch_kepco_realtime(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), "")
+            if raw_data and in_jibun:
+                st.info(f"💡 반경 10개 지번까지 탐색했으나 미등록된 지역입니다. 대신 **'{in_lidong} {in_li}' 전체 배전선로 데이터**를 불러왔습니다.")
 
-                if not raw_data:
-                    raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), "")
-                    if raw_data and in_jibun:
-                        st.info(f"💡 반경 10개 지번까지 탐색했으나 한전 DB에 미등록된 오지입니다. 대신 **'{in_lidong} {in_li}' 전체의 배전선로 데이터**를 모두 불러왔습니다.")
-
-                if raw_data:
-                    rt_df = pd.DataFrame(raw_data)
-                    rt_df = rt_df.rename(columns={"dlNm": "DL명(읍면동)", "vol3": "DL 여유용량", "vol2": "변압기 여유용량", "vol1": "변전소 여유용량", "substNm": "변전소명"})
-                    for col in ["DL 여유용량", "변압기 여유용량", "변전소 여유용량"]:
-                        if col in rt_df.columns: rt_df[col] = pd.to_numeric(rt_df[col].astype(str).str.replace(",", ""), errors='coerce').fillna(0) / 1000.0
-                    rt_df['연계가능여부'] = (rt_df['변압기 여유용량'] > 0) & (rt_df['변전소 여유용량'] > 0)
-                    rt_df['연계상태'] = rt_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
-                    rt_df = rt_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False]).drop_duplicates(subset=['DL명(읍면동)']).reset_index(drop=True)
-                    rt_df["순위"] = range(1, len(rt_df) + 1)
-                    st.dataframe(rt_df[["순위", "연계상태", "DL명(읍면동)", "DL 여유용량", "변압기 여유용량", "변전소 여유용량", "변전소명"]], use_container_width=True, hide_index=True)
-                else: st.warning("⚠️ 한전 실시간 API에 해당 지역의 데이터가 아예 존재하지 않습니다.")
+        # 데이터 출력
+        if raw_data:
+            rt_df = pd.DataFrame(raw_data)
+            rt_df = rt_df.rename(columns={"dlNm": "DL명(읍면동)", "vol3": "DL 여유용량", "vol2": "변압기 여유용량", "vol1": "변전소 여유용량", "substNm": "변전소명"})
+            for col in ["DL 여유용량", "변압기 여유용량", "변전소 여유용량"]:
+                if col in rt_df.columns: rt_df[col] = pd.to_numeric(rt_df[col].astype(str).str.replace(",", ""), errors='coerce').fillna(0) / 1000.0
+            rt_df['연계가능여부'] = (rt_df['변압기 여유용량'] > 0) & (rt_df['변전소 여유용량'] > 0)
+            rt_df['연계상태'] = rt_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
+            rt_df = rt_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False]).drop_duplicates(subset=['DL명(읍면동)']).reset_index(drop=True)
+            rt_df["순위"] = range(1, len(rt_df) + 1)
+            st.dataframe(rt_df[["순위", "연계상태", "DL명(읍면동)", "DL 여유용량", "변압기 여유용량", "변전소 여유용량", "변전소명"]], use_container_width=True, hide_index=True)
+        else:
+            st.warning("⚠️ 한전 실시간 API에 해당 지역의 데이터가 아예 존재하지 않습니다.")
 
 st.markdown("---")
 
 # ==========================================
-# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱 (주소 자동 연동 패치)
+# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱 (원스톱 지도 자동 연동)
 # ==========================================
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
-st.markdown("위 2번 항목에서 조회하신 주소가 **아래 검색창에 자동으로 연동**됩니다.")
+st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**됩니다. 원하시면 지번을 직접 타이핑해서 검색하실 수도 있습니다.")
 
-# 💡 핵심 로직: 2번 창에서 입력된 텍스트들을 하나의 주소로 완벽하게 조립합니다.
-auto_address = ""
-if in_lidong:
-    # 빈칸 필터링을 통해 띄어쓰기가 깔끔하게 되도록 조립
-    address_parts = [rt_sido, rt_sigg, in_lidong.strip(), in_li.strip(), in_jibun.strip()]
-    auto_address = " ".join([p for p in address_parts if p])
+# 💡 2번에서 1번만 검색해도, 세션 스테이트(기억장치)를 통해 3번 검색창에 구주소가 쏙 들어갑니다!
+default_map_addr = st.session_state.get('auto_map_address', "")
+search_addr_map = st.text_input("🔍 지도 주소 직접 검색 (2번에서 검색 시 자동 완성됨)", value=default_map_addr, placeholder="예: 김천시 아포읍 대성리 348")
 
-# 💡 조립된 주소(auto_address)를 text_input의 value 기본값으로 넣어줍니다.
-search_addr = st.text_input("🔍 지도 주소 직접 검색 (2번 입력 시 자동 완성됩니다)", value=auto_address, placeholder="예: 김천시 아포읍 대성리 348")
-
-if search_addr:
-    with st.spinner("카카오 엔진으로 주소를 짚어내고, 지적도를 덧씌웁니다..."):
-        lat_c, lon_c, kakao_log = get_kakao_coord(search_addr)
+if search_addr_map:
+    with st.spinner("해당 지번의 위성지도와 지적도를 불러옵니다..."):
+        lat, lon = get_kakao_coord(search_addr_map)
         
-        if DEBUG_MODE:
-            with st.expander("🔧 카카오 API 통신 기록 (디버그)", expanded=True):
-                for label, status, body in kakao_log:
-                    st.write(f"**{label}** — HTTP 상태: `{status}`")
-                    st.code(body, language="json")
-        
-        if lat_c is not None:
-            lat, lon = lat_c, lon_c
-            has_jibun = bool(re.search(r'\d', search_addr))
-            
-            if has_jibun:
-                st.success(f"✅ 카카오 주소 탐색 성공! 빨간 마커 위치가 해당 번지수입니다. (위도: {lat:.4f}, 경도: {lon:.4f})")
-            else:
-                st.success(f"✅ 카카오 주소 탐색 성공! 해당 행정구역 중심입니다. (위도: {lat:.4f}, 경도: {lon:.4f})")
-                
+        if lat is not None:
+            has_jibun = bool(re.search(r'\d', search_addr_map))
             start_zoom = 19 if has_jibun else 15
             m = folium.Map(location=[lat, lon], zoom_start=start_zoom, max_zoom=22, tiles=None)
 
@@ -306,6 +377,7 @@ if search_addr:
                 attr='VWorld Hybrid', name='🏷️ 글자 오버레이', overlay=True, control=True, show=True, max_zoom=22
             ).add_to(m)
 
+            # 3. 브이월드 지적도 투명 유리창 씌우기 (HTTPS)
             if has_jibun:
                 folium.WmsTileLayer(
                     url=f"https://api.vworld.kr/req/wms?key={VWORLD_KEY}&domain={DOMAIN}",
@@ -319,7 +391,7 @@ if search_addr:
                     show=True
                 ).add_to(m)
             else:
-                layer_name = "lt_c_adri_info" if "리" in search_addr.split()[-1] or "리 " in search_addr else "lt_c_ademd_info"
+                layer_name = "lt_c_adri_info" if "리" in search_addr_map.split()[-1] or "리 " in search_addr_map else "lt_c_ademd_info"
                 folium.WmsTileLayer(
                     url=f"https://api.vworld.kr/req/wms?key={VWORLD_KEY}&domain={DOMAIN}",
                     layers=layer_name,
@@ -332,9 +404,9 @@ if search_addr:
                     show=True
                 ).add_to(m)
 
-            folium.Marker([lat, lon], popup=f"<b>{search_addr}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
+            folium.Marker([lat, lon], popup=f"<b>{search_addr_map}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
             folium.LayerControl(position='topright').add_to(m)
             
             st_folium(m, width=1300, height=750, returned_objects=[], key=f"wms_map_{lat}_{lon}")
         else:
-            st.error("⚠️ 카카오 엔진에서 주소를 찾지 못했습니다. 띄어쓰기 등을 확인해주세요.")
+            st.error("⚠️ 주소를 변환할 수 없어 지도를 띄우지 못했습니다.")
