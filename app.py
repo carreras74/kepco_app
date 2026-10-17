@@ -64,6 +64,13 @@ st.sidebar.title("🛠️ 시스템 도구")
 DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=False)
 
 # ==========================================
+# 💡 [핵심 추가] 엔터 키 감지용 콜백 함수
+# ==========================================
+def trigger_search():
+    """검색창에서 엔터를 치면 '버튼이 눌린 것과 똑같은 상태'로 만들어줍니다."""
+    st.session_state['do_kepco_search'] = True
+
+# ==========================================
 # 📊 기획 1, 3, 4번: 구글 시트 연동 및 랭킹 정렬
 # ==========================================
 @st.cache_data(ttl=600)
@@ -198,12 +205,10 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
-# 💡 깃허브 폴더에 있는 사진 읽어오기
 def get_image_base64(filename):
     try:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         file_path = os.path.join(current_dir, filename)
-        
         with open(file_path, "rb") as img_file:
             ext = filename.split('.')[-1].lower()
             mime_type = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
@@ -220,9 +225,7 @@ image_filename = "header_bg.png"
 img_base64 = get_image_base64(image_filename)
 
 if img_base64:
-    # 💡 [핵심 디자인 패치] 
-    # 1. rgba(0,0,0,0.1), rgba(0,0,0,0.3) -> 검은색 필터를 확 줄여서 이미지를 밝게
-    # 2. center bottom -> 이미지가 상하로 짤릴 때 '바닥(발전소)'을 기준으로 고정
+    # 💡 밝게! 하단 발전소 고정! 130px 여백! 완벽한 배경 CSS
     bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)), url('{img_base64}') center bottom/cover no-repeat;"
 else:
     bg_style = "background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)); background-color: #2c3e50;"
@@ -230,7 +233,7 @@ else:
 st.markdown(f"""
     <div style="
         {bg_style}
-        padding: 130px 20px;  /* 💡 위아래 공간을 확 늘려서 발전소와 송전탑이 더 많이 보이도록 확장 */
+        padding: 130px 20px;
         border-radius: 15px;
         margin-bottom: 30px;
         text-align: center;
@@ -271,10 +274,10 @@ else: st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 
+# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회
 # ---------------------------------------------------------
 st.header("🎯 2. 상세 주소 실시간 1건 조회 (한전 여유용량 확인)")
-st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다. (조회 시 아래 3번 지도가 자동 완성됩니다)")
+st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다. 검색 시 아래 3번 지도가 자동 완성됩니다.")
 
 df_regions = get_region_codes()
 
@@ -283,8 +286,9 @@ search_mode = st.radio("검색 방식 선택", ["📝 통합 주소 검색 (신�
 integrated_addr = ""
 rt_sido, rt_sigg, in_lidong, in_li, in_jibun = "", "", "", "", ""
 
+# 💡 [핵심 로직] on_change=trigger_search 속성을 통해 엔터 키를 누르면 바로 조회 시작!
 if "통합" in search_mode:
-    integrated_addr = st.text_input("🔍 조회할 주소를 입력하세요 (도로명 / 지번 모두 완벽 지원)", placeholder="예: 김천시 아포대로 123 또는 아포읍 대성리 348")
+    integrated_addr = st.text_input("🔍 조회할 주소를 입력하고 '엔터'를 누르세요", placeholder="예: 김천시 아포대로 123 또는 아포읍 대성리 348", on_change=trigger_search)
 else:
     if not df_regions.empty:
         rt_col1, rt_col2 = st.columns(2)
@@ -292,11 +296,16 @@ else:
         with rt_col2: rt_sigg = st.selectbox("🏢 시/군/구", sorted(df_regions[df_regions['시도'] == rt_sido]['시군구'].unique().tolist()), key="rt_sigg_bot")
 
         rt_col3, rt_col4, rt_col5 = st.columns(3)
-        with rt_col3: in_lidong = st.text_input("읍/면/동 (필수)", placeholder="예: 아포읍")
-        with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리")
-        with rt_col5: in_jibun = st.text_input("상세번지 (선택)", placeholder="예: 348 또는 산12")
+        with rt_col3: in_lidong = st.text_input("읍/면/동 (필수)", placeholder="예: 아포읍", on_change=trigger_search)
+        with rt_col4: in_li = st.text_input("리 (선택)", placeholder="예: 대성리", on_change=trigger_search)
+        with rt_col5: in_jibun = st.text_input("상세번지 (선택)", placeholder="예: 348 또는 산12", on_change=trigger_search)
 
-if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_width=True):
+search_btn_clicked = st.button("🚀 한전 실시간 여유용량 조회하기", use_container_width=True)
+
+# 💡 사용자가 버튼을 클릭했거나, 텍스트창에서 '엔터'를 쳤을 때 모두 실행됨
+if search_btn_clicked or st.session_state.get('do_kepco_search', False):
+    st.session_state['do_kepco_search'] = False # 무한 루프 방지를 위해 즉시 초기화
+    
     with st.spinner("주소를 분석하고 한전 서버를 탐색 중입니다..."):
         auto_address = ""
         
@@ -321,6 +330,7 @@ if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_wi
             address_parts = [rt_sido, rt_sigg, in_lidong.strip(), in_li.strip(), in_jibun.strip()]
             auto_address = " ".join([p for p in address_parts if p])
 
+        # 3번 지도로 넘겨줄 주소 저장
         st.session_state['auto_map_address'] = auto_address
 
         target_metroCd, target_cityCd = match_kepco_region_code(rt_sido, rt_sigg, df_regions)
@@ -380,7 +390,7 @@ st.markdown("---")
 # 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱
 # ==========================================
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
-st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**됩니다.")
+st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**됩니다. 원하시면 지번을 직접 타이핑해서 검색하실 수도 있습니다.")
 
 default_map_addr = st.session_state.get('auto_map_address', "")
 search_addr_map = st.text_input("🔍 지도 주소 직접 검색 (2번에서 검색 시 자동 완성됨)", value=default_map_addr, placeholder="예: 김천시 아포읍 대성리 348")
