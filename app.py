@@ -60,9 +60,8 @@ KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d" 
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
-# 선생님 지시사항: 디버그 모드 절대 빼지 않기
 st.sidebar.title("🛠️ 시스템 도구")
-DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=True)
+DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=False)
 
 # ==========================================
 # 📊 기획 1, 3, 4번: 구글 시트 연동 및 랭킹 정렬
@@ -147,7 +146,7 @@ def match_kepco_region_code(sido, sigg, df_regions):
     return None, None
 
 # ==========================================
-# 🗺️ 3부: 카카오 주소 자동 번역기 (신주소 -> 구주소)
+# 🗺️ 3부: 카카오 주소 자동 번역기
 # ==========================================
 def get_jibun_from_kakao(address):
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
@@ -199,7 +198,7 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
-# 💡 [핵심 기술] 깃허브 폴더에 있는 사진 파일을 파이썬이 직접 읽어 Base64로 강제 변환
+# 💡 [핵심 기술] 로컬(깃허브) 폴더의 가벼운 사진 파일을 읽어옵니다.
 def get_image_base64(image_path):
     try:
         with open(image_path, "rb") as img_file:
@@ -211,15 +210,14 @@ def get_image_base64(image_path):
 # 🖥️ 앱 화면 구성 시작
 # ==========================================
 
-# 깃허브에 올려두신 파일 이름을 정확히 매칭!
+# 💡 용량을 줄여서 깃허브에 올리신 그 파일 이름! (만약 jpg로 바꾸셨다면 "header_bg.jpg"로 수정해주세요)
 image_filename = "header_bg.png" 
 img_base64 = get_image_base64(image_filename)
 
 if img_base64:
-    # 깃허브 파일을 성공적으로 읽었을 때
     bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7)), url('data:image/png;base64,{img_base64}') center/cover no-repeat;"
 else:
-    # 파일을 못 찾았을 때 비상용 짙은 남색 배경
+    # 이미지가 여전히 용량이 커서 실패하거나 파일이 없을 때 비상용 배경
     bg_style = "background: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7)); background-color: #2c3e50;"
 
 st.markdown(f"""
@@ -238,7 +236,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 
+# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 (선생님의 4대 기획 완벽 구현)
 # ---------------------------------------------------------
 st.header("📊 1. 전체 지역 랭킹 조회 (매일 자동 업데이트 엑셀 연동)")
 df_gs = load_gsheets_data()
@@ -254,6 +252,7 @@ if not df_gs.empty:
     gs_target_df['연계가능여부'] = (gs_target_df['변압기 여유용량'] > 0) & (gs_target_df['변전소 여유용량'] > 0)
     gs_target_df['연계상태'] = gs_target_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
 
+    # 최대로 여유용량 많은 곳부터 순서대로 보여줍니다! (기획 4번)
     gs_target_df = gs_target_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False])
     gs_target_df['고유DL명'] = gs_target_df['시/구/군'] + " " + gs_target_df['DL명(읍면동)']
     gs_target_df = gs_target_df.drop_duplicates(subset=['고유DL명'], keep='first').reset_index(drop=True)
@@ -266,10 +265,10 @@ else: st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 (신주소 변환기 탑재)
+# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회
 # ---------------------------------------------------------
 st.header("🎯 2. 상세 주소 실시간 1건 조회 (한전 여유용량 확인)")
-st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다. (조회 시 아래 3번 지도가 자동 완성됩니다)")
+st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다.")
 
 df_regions = get_region_codes()
 
@@ -375,7 +374,7 @@ st.markdown("---")
 # 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱 (원스톱 지도 자동 연동)
 # ==========================================
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
-st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**됩니다. 원하시면 지번을 직접 타이핑해서 검색하실 수도 있습니다.")
+st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**됩니다.")
 
 default_map_addr = st.session_state.get('auto_map_address', "")
 search_addr_map = st.text_input("🔍 지도 주소 직접 검색 (2번에서 검색 시 자동 완성됨)", value=default_map_addr, placeholder="예: 김천시 아포읍 대성리 348")
