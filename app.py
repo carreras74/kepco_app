@@ -8,7 +8,6 @@ import os
 import time
 import re
 import gspread
-import base64
 from oauth2client.service_account import ServiceAccountCredentials
 
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
@@ -121,7 +120,6 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
     return []
 
 def match_kepco_region_code(sido, sigg, df_regions):
-    """카카오의 '경북'을 한전의 '경상북도'로 변환하여 코드를 찾습니다."""
     SIDO_MAP = {
         "서울": "서울특별시", "부산": "부산광역시", "대구": "대구광역시", "인천": "인천광역시",
         "광주": "광주광역시", "대전": "대전광역시", "울산": "울산광역시", "세종특별자치시": "세종특별자치시", "세종": "세종특별자치시",
@@ -150,7 +148,6 @@ def match_kepco_region_code(sido, sigg, df_regions):
 # 🗺️ 3부: 카카오 주소 자동 번역기 (신주소 -> 구주소)
 # ==========================================
 def get_jibun_from_kakao(address):
-    """신주소를 넣어도 카카오 API가 읍/면/동/리/상세번지를 완벽하게 발라냅니다."""
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
     url_addr = "https://dapi.kakao.com/v2/local/search/address.json"
     try:
@@ -200,40 +197,30 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
-def get_image_base64(image_path):
-    """로컬 이미지를 웹에서 띄우기 위해 텍스트(base64)로 변환합니다."""
-    with open(image_path, "rb") as img_file:
-        return base64.b64encode(img_file.read()).decode('utf-8')
 
 # ==========================================
 # 🖥️ 앱 화면 구성 시작
 # ==========================================
 
-# 💡 타이틀을 이미지 배경 배너로 교체!
-bg_image_path = "header_bg.png" # 선생님께서 저장하신 파일명과 동일해야 합니다!
+# 💡 [핵심] 스트림릿 용량 제한을 우회하기 위해 이미지의 '인터넷 주소(URL)'를 직접 연결합니다!
+# 아래에 임시로 무료 고화질 태양광 이미지를 걸어두었습니다.
+BG_IMAGE_URL = "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e?q=80&w=2000&auto=format&fit=crop"
 
-if os.path.exists(bg_image_path):
-    img_base64 = get_image_base64(bg_image_path)
-    # 글씨가 잘 보이도록 검은색 반투명 그라데이션을 덧씌우고 이미지를 렌더링합니다.
-    st.markdown(f"""
-        <div style="
-            background-image: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.6)), url('data:image/png;base64,{img_base64}');
-            background-size: cover;
-            background-position: center;
-            padding: 50px 20px;
-            border-radius: 15px;
-            margin-bottom: 30px;
-            text-align: center;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        ">
-            <h1 style="color: white; font-weight: 800; margin: 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); font-size: 2.5rem;">
-                ⚡ 전국 송전여유용량 종합 분석 APP
-            </h1>
-        </div>
-    """, unsafe_allow_html=True)
-else:
-    # 이미지가 폴더에 없을 경우 기존 기본 타이틀 출력
-    st.title("⚡ 전국 송전여유용량 종합 분석 APP")
+st.markdown(f"""
+    <div style="
+        background: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7)), url('{BG_IMAGE_URL}') center/cover no-repeat;
+        padding: 60px 20px;
+        border-radius: 15px;
+        margin-bottom: 30px;
+        text-align: center;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    ">
+        <h1 style="color: white; font-weight: 800; margin: 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); font-size: 2.2rem;">
+            ⚡ 전국 송전여유용량 종합 분석 APP
+        </h1>
+    </div>
+""", unsafe_allow_html=True)
+
 
 # ---------------------------------------------------------
 # 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 
