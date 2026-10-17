@@ -60,7 +60,7 @@ KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d"
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
 st.sidebar.title("🛠️ 시스템 도구")
-DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=True)
+DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=False) # 평소엔 꺼두도록 기본값 False로 변경
 
 # ==========================================
 # 📊 기획 1, 3, 4번: 구글 시트 연동 및 랭킹 정렬
@@ -202,20 +202,19 @@ def get_kakao_coord(address):
 # 🖥️ 앱 화면 구성 시작
 # ==========================================
 
-# 💡 [핵심] 스트림릿 용량 제한을 우회하기 위해 이미지의 '인터넷 주소(URL)'를 직접 연결합니다!
-# 아래에 임시로 무료 고화질 태양광 이미지를 걸어두었습니다.
-BG_IMAGE_URL = "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e?q=80&w=2000&auto=format&fit=crop"
+# 💡 선생님의 구글 드라이브 다이렉트 이미지 URL!
+BG_IMAGE_URL = "https://drive.google.com/uc?export=view&id=1h44gZEjCQn12X7Ogi3cVCYJGurCPok3l"
 
 st.markdown(f"""
     <div style="
-        background: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7)), url('{BG_IMAGE_URL}') center/cover no-repeat;
-        padding: 60px 20px;
+        background: linear-gradient(rgba(0, 0, 0, 0.3), rgba(0, 0, 0, 0.6)), url('{BG_IMAGE_URL}') center/cover no-repeat;
+        padding: 80px 20px;
         border-radius: 15px;
         margin-bottom: 30px;
         text-align: center;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        box-shadow: 0 6px 10px rgba(0,0,0,0.4);
     ">
-        <h1 style="color: white; font-weight: 800; margin: 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); font-size: 2.2rem;">
+        <h1 style="color: white; font-weight: 900; margin: 0; text-shadow: 2px 2px 5px rgba(0,0,0,0.8); font-size: 2.8rem;">
             ⚡ 전국 송전여유용량 종합 분석 APP
         </h1>
     </div>
