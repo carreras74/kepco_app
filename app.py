@@ -198,11 +198,17 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
-# 💡 [핵심 기술] 로컬(깃허브) 폴더의 가벼운 사진 파일을 읽어옵니다.
-def get_image_base64(image_path):
+# 💡 깃허브 폴더에 있는 사진 읽어오기
+def get_image_base64(filename):
     try:
-        with open(image_path, "rb") as img_file:
-            return base64.b64encode(img_file.read()).decode('utf-8')
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(current_dir, filename)
+        
+        with open(file_path, "rb") as img_file:
+            ext = filename.split('.')[-1].lower()
+            mime_type = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
+            b64_string = base64.b64encode(img_file.read()).decode('utf-8')
+            return f"data:{mime_type};base64,{b64_string}"
     except Exception as e:
         return ""
 
@@ -210,33 +216,34 @@ def get_image_base64(image_path):
 # 🖥️ 앱 화면 구성 시작
 # ==========================================
 
-# 💡 용량을 줄여서 깃허브에 올리신 그 파일 이름! (만약 jpg로 바꾸셨다면 "header_bg.jpg"로 수정해주세요)
 image_filename = "header_bg.png" 
 img_base64 = get_image_base64(image_filename)
 
 if img_base64:
-    bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7)), url('data:image/png;base64,{img_base64}') center/cover no-repeat;"
+    # 💡 [핵심 디자인 패치] 
+    # 1. rgba(0,0,0,0.1), rgba(0,0,0,0.3) -> 검은색 필터를 확 줄여서 이미지를 밝게
+    # 2. center bottom -> 이미지가 상하로 짤릴 때 '바닥(발전소)'을 기준으로 고정
+    bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)), url('{img_base64}') center bottom/cover no-repeat;"
 else:
-    # 이미지가 여전히 용량이 커서 실패하거나 파일이 없을 때 비상용 배경
-    bg_style = "background: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.7)); background-color: #2c3e50;"
+    bg_style = "background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)); background-color: #2c3e50;"
 
 st.markdown(f"""
     <div style="
         {bg_style}
-        padding: 80px 20px;
+        padding: 130px 20px;  /* 💡 위아래 공간을 확 늘려서 발전소와 송전탑이 더 많이 보이도록 확장 */
         border-radius: 15px;
         margin-bottom: 30px;
         text-align: center;
         box-shadow: 0 6px 10px rgba(0,0,0,0.4);
     ">
-        <h1 style="color: white; font-weight: 900; margin: 0; text-shadow: 2px 2px 5px rgba(0,0,0,0.8); font-size: 2.8rem;">
+        <h1 style="color: white; font-weight: 900; margin: 0; text-shadow: 2px 2px 8px rgba(0,0,0,1.0); font-size: 2.8rem;">
             ⚡ 전국 송전여유용량 종합 분석 APP
         </h1>
     </div>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 (선생님의 4대 기획 완벽 구현)
+# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 
 # ---------------------------------------------------------
 st.header("📊 1. 전체 지역 랭킹 조회 (매일 자동 업데이트 엑셀 연동)")
 df_gs = load_gsheets_data()
@@ -252,7 +259,6 @@ if not df_gs.empty:
     gs_target_df['연계가능여부'] = (gs_target_df['변압기 여유용량'] > 0) & (gs_target_df['변전소 여유용량'] > 0)
     gs_target_df['연계상태'] = gs_target_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
 
-    # 최대로 여유용량 많은 곳부터 순서대로 보여줍니다! (기획 4번)
     gs_target_df = gs_target_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False])
     gs_target_df['고유DL명'] = gs_target_df['시/구/군'] + " " + gs_target_df['DL명(읍면동)']
     gs_target_df = gs_target_df.drop_duplicates(subset=['고유DL명'], keep='first').reset_index(drop=True)
@@ -265,10 +271,10 @@ else: st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회
+# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 
 # ---------------------------------------------------------
 st.header("🎯 2. 상세 주소 실시간 1건 조회 (한전 여유용량 확인)")
-st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다.")
+st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다. (조회 시 아래 3번 지도가 자동 완성됩니다)")
 
 df_regions = get_region_codes()
 
@@ -371,7 +377,7 @@ if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_wi
 st.markdown("---")
 
 # ==========================================
-# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱 (원스톱 지도 자동 연동)
+# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱
 # ==========================================
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
 st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**됩니다.")
