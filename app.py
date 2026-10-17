@@ -8,6 +8,7 @@ import os
 import time
 import re
 import gspread
+import base64
 from oauth2client.service_account import ServiceAccountCredentials
 
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
@@ -155,7 +156,7 @@ def get_jibun_from_kakao(address):
     try:
         res = requests.get(url_addr, headers=headers, params={"query": address}, timeout=5).json()
         if res.get('documents'):
-            addr_obj = res['documents'][0].get('address') # 무조건 지번(구주소) 객체 가져오기
+            addr_obj = res['documents'][0].get('address')
             if addr_obj:
                 sido = addr_obj.get('region_1depth_name', '')
                 sigg = addr_obj.get('region_2depth_name', '')
@@ -176,7 +177,6 @@ def get_jibun_from_kakao(address):
                 return full_jibun, sido, sigg, lidong, li, jibun
     except: pass
     
-    # 2차: 일반 키워드 검색 시 (좌표용)
     url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
     try:
         res2 = requests.get(url_kw, headers=headers, params={"query": address}, timeout=5).json()
@@ -200,10 +200,40 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
+def get_image_base64(image_path):
+    """로컬 이미지를 웹에서 띄우기 위해 텍스트(base64)로 변환합니다."""
+    with open(image_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode('utf-8')
+
 # ==========================================
 # 🖥️ 앱 화면 구성 시작
 # ==========================================
-st.title("⚡ 전국 송전여유용량 종합 분석 APP")
+
+# 💡 타이틀을 이미지 배경 배너로 교체!
+bg_image_path = "header_bg.png" # 선생님께서 저장하신 파일명과 동일해야 합니다!
+
+if os.path.exists(bg_image_path):
+    img_base64 = get_image_base64(bg_image_path)
+    # 글씨가 잘 보이도록 검은색 반투명 그라데이션을 덧씌우고 이미지를 렌더링합니다.
+    st.markdown(f"""
+        <div style="
+            background-image: linear-gradient(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.6)), url('data:image/png;base64,{img_base64}');
+            background-size: cover;
+            background-position: center;
+            padding: 50px 20px;
+            border-radius: 15px;
+            margin-bottom: 30px;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        ">
+            <h1 style="color: white; font-weight: 800; margin: 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.8); font-size: 2.5rem;">
+                ⚡ 전국 송전여유용량 종합 분석 APP
+            </h1>
+        </div>
+    """, unsafe_allow_html=True)
+else:
+    # 이미지가 폴더에 없을 경우 기존 기본 타이틀 출력
+    st.title("⚡ 전국 송전여유용량 종합 분석 APP")
 
 # ---------------------------------------------------------
 # 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 
@@ -263,7 +293,6 @@ if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_wi
     with st.spinner("주소를 분석하고 한전 서버를 탐색 중입니다..."):
         auto_address = ""
         
-        # 💡 [핵심] 통합 주소 입력 시 카카오를 통한 구주소 분해 로직
         if "통합" in search_mode:
             if not integrated_addr:
                 st.warning("주소를 입력해주세요.")
@@ -277,7 +306,7 @@ if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_wi
                 
             st.success(f"🔄 **구주소 자동 번역 완료:** {full_jibun}")
             rt_sido, rt_sigg, in_lidong, in_li, in_jibun = p_sido, p_sigg, p_lidong, p_li, p_jibun
-            auto_address = full_jibun # 3번 지도로 넘겨줄 최종 주소
+            auto_address = full_jibun 
         else:
             if not in_lidong:
                 st.warning("읍/면/동을 입력해주세요.")
@@ -285,19 +314,15 @@ if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_wi
             address_parts = [rt_sido, rt_sigg, in_lidong.strip(), in_li.strip(), in_jibun.strip()]
             auto_address = " ".join([p for p in address_parts if p])
 
-        # 💡 3번 지도에 자동 연동시키기 위한 세션 저장
         st.session_state['auto_map_address'] = auto_address
 
-        # 한전 지역코드 매칭
         target_metroCd, target_cityCd = match_kepco_region_code(rt_sido, rt_sigg, df_regions)
         if not target_metroCd:
             st.error(f"⚠️ 한전 DB에서 '{rt_sido} {rt_sigg}' 지역을 찾을 수 없습니다.")
             st.stop()
 
-        # 1차 탐색
         raw_data = fetch_kepco_realtime(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
         
-        # 2차 스마트 인접 탐색 (선생님 로직 적용)
         if not raw_data and in_jibun:
             is_san = "산" in in_jibun
             clean_jibun = in_jibun.replace("산", "").strip()
@@ -324,13 +349,11 @@ if st.button("🚀 한전 실시간 여유용량 조회하기", use_container_wi
                             st.success(f"💡 한전 DB에 해당 번지가 누락되어, 인접 지번 **[{nearby_j}번지]** 기준으로 연결 가능한 선로를 추적했습니다!")
                         break
                         
-        # 3차 전체 탐색
         if not raw_data:
             raw_data = fetch_kepco_realtime(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), "")
             if raw_data and in_jibun:
                 st.info(f"💡 반경 10개 지번까지 탐색했으나 미등록된 지역입니다. 대신 **'{in_lidong} {in_li}' 전체 배전선로 데이터**를 불러왔습니다.")
 
-        # 데이터 출력
         if raw_data:
             rt_df = pd.DataFrame(raw_data)
             rt_df = rt_df.rename(columns={"dlNm": "DL명(읍면동)", "vol3": "DL 여유용량", "vol2": "변압기 여유용량", "vol1": "변전소 여유용량", "substNm": "변전소명"})
@@ -352,7 +375,6 @@ st.markdown("---")
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
 st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**됩니다. 원하시면 지번을 직접 타이핑해서 검색하실 수도 있습니다.")
 
-# 💡 2번에서 1번만 검색해도, 세션 스테이트(기억장치)를 통해 3번 검색창에 구주소가 쏙 들어갑니다!
 default_map_addr = st.session_state.get('auto_map_address', "")
 search_addr_map = st.text_input("🔍 지도 주소 직접 검색 (2번에서 검색 시 자동 완성됨)", value=default_map_addr, placeholder="예: 김천시 아포읍 대성리 348")
 
@@ -365,19 +387,16 @@ if search_addr_map:
             start_zoom = 19 if has_jibun else 15
             m = folium.Map(location=[lat, lon], zoom_start=start_zoom, max_zoom=22, tiles=None)
 
-            # 1. 2D 위성지도 (HTTPS)
             folium.TileLayer(
                 tiles=f'https://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Satellite/{{z}}/{{y}}/{{x}}.jpeg',
                 attr='VWorld Satellite', name='🛰️ 브이월드 위성지도', overlay=False, control=True, show=True, max_zoom=22
             ).add_to(m)
 
-            # 2. 도로명/지명 하이브리드 오버레이 (HTTPS)
             folium.TileLayer(
                 tiles=f'https://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Hybrid/{{z}}/{{y}}/{{x}}.png',
                 attr='VWorld Hybrid', name='🏷️ 글자 오버레이', overlay=True, control=True, show=True, max_zoom=22
             ).add_to(m)
 
-            # 3. 브이월드 지적도 투명 유리창 씌우기 (HTTPS)
             if has_jibun:
                 folium.WmsTileLayer(
                     url=f"https://api.vworld.kr/req/wms?key={VWORLD_KEY}&domain={DOMAIN}",
