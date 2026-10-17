@@ -59,6 +59,7 @@ KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d" 
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
+# 💡 디버그 모드 (선생님 허락 전까지 절대 안 뺍니다!)
 st.sidebar.title("🛠️ 시스템 도구")
 DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=True)
 
@@ -206,15 +207,12 @@ if not df_regions.empty:
         if not in_lidong: st.warning("읍/면/동을 입력해주세요.")
         else:
             with st.spinner("한전 서버 조회 및 스마트 인접 지번 탐색 중..."):
-                # 💡 1차: 입력한 원본 지번 검색 (예: 122-3)
                 raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), in_jibun.strip())
                 
-                # 💡 2차: 1차 실패 시 아래쪽(-) 번지수 우선으로 앞뒤 10개씩 공격적 탐색
                 if not raw_data and in_jibun:
                     is_san = "산" in in_jibun
                     clean_jibun = in_jibun.replace("산", "").strip()
                     
-                    # '122-3' 이라면 '122'만 남김
                     if "-" in clean_jibun:
                         base_num_str = clean_jibun.split("-")[0]
                     else:
@@ -222,7 +220,6 @@ if not df_regions.empty:
                         
                     if base_num_str.isdigit():
                         base_num = int(base_num_str)
-                        # 선생님 지시 반영: 아래쪽 번호(-1, -2...)를 꼼꼼하게 먼저 찌르도록 순서 조정 & 범위 10개로 확대
                         offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -7, 7, -8, 8, -9, 9, -10, 10]
                         
                         for offset in offsets:
@@ -240,7 +237,6 @@ if not df_regions.empty:
                                     st.success(f"💡 한전 DB에 해당 번지가 누락되어, 인접한 주변 지번 **[{nearby_j}번지]** 기준으로 연결 가능한 선로를 추적했습니다!")
                                 break
 
-                # 💡 3차: 반경 10개 인접 지번도 없으면 해당 동/리 전체 검색
                 if not raw_data:
                     raw_data = fetch_kepco_realtime(target_reg['metroCd'], target_reg['cityCd'], in_lidong.strip(), in_li.strip(), "")
                     if raw_data and in_jibun:
@@ -261,15 +257,23 @@ if not df_regions.empty:
 st.markdown("---")
 
 # ==========================================
-# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱
+# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱 (주소 자동 연동 패치)
 # ==========================================
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
-st.markdown("데이터 차단을 완벽 우회하는 **'지적도 유리창(WMS) 기술'**을 적용했습니다. 내 땅 한가운데에 빨간 핀이 꽂히고 주변 지적도 선이 모두 선명하게 나타납니다.")
+st.markdown("위 2번 항목에서 조회하신 주소가 **아래 검색창에 자동으로 연동**됩니다.")
 
-search_addr = st.text_input("🔍 지도 주소 직접 검색 (읍/면/동/리 또는 상세 번지)", placeholder="예: 김천시 아포읍 또는 예천군 호명읍 산합리 1123")
+# 💡 핵심 로직: 2번 창에서 입력된 텍스트들을 하나의 주소로 완벽하게 조립합니다.
+auto_address = ""
+if in_lidong:
+    # 빈칸 필터링을 통해 띄어쓰기가 깔끔하게 되도록 조립
+    address_parts = [rt_sido, rt_sigg, in_lidong.strip(), in_li.strip(), in_jibun.strip()]
+    auto_address = " ".join([p for p in address_parts if p])
+
+# 💡 조립된 주소(auto_address)를 text_input의 value 기본값으로 넣어줍니다.
+search_addr = st.text_input("🔍 지도 주소 직접 검색 (2번 입력 시 자동 완성됩니다)", value=auto_address, placeholder="예: 김천시 아포읍 대성리 348")
 
 if search_addr:
-    with st.spinner("카카오 엔진으로 주소를 짚어내고, 지적도를 유리창처럼 덧씌웁니다..."):
+    with st.spinner("카카오 엔진으로 주소를 짚어내고, 지적도를 덧씌웁니다..."):
         lat_c, lon_c, kakao_log = get_kakao_coord(search_addr)
         
         if DEBUG_MODE:
