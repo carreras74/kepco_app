@@ -64,10 +64,9 @@ st.sidebar.title("🛠️ 시스템 도구")
 DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=False)
 
 # ==========================================
-# 💡 [핵심 추가] 엔터 키 감지용 콜백 함수
+# 💡 엔터 키 감지용 콜백 함수
 # ==========================================
 def trigger_search():
-    """검색창에서 엔터를 치면 '버튼이 눌린 것과 똑같은 상태'로 만들어줍니다."""
     st.session_state['do_kepco_search'] = True
 
 # ==========================================
@@ -128,6 +127,10 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
     return []
 
 def match_kepco_region_code(sido, sigg, df_regions):
+    # 💡 [핵심 패치 1] 행정구역 코드가 비어있어서 발생하는 KeyError 완벽 차단
+    if df_regions is None or df_regions.empty or '시도' not in df_regions.columns:
+        return None, None
+
     SIDO_MAP = {
         "서울": "서울특별시", "부산": "부산광역시", "대구": "대구광역시", "인천": "인천광역시",
         "광주": "광주광역시", "대전": "대전광역시", "울산": "울산광역시", "세종특별자치시": "세종특별자치시", "세종": "세종특별자치시",
@@ -225,7 +228,6 @@ image_filename = "header_bg.png"
 img_base64 = get_image_base64(image_filename)
 
 if img_base64:
-    # 💡 밝게! 하단 발전소 고정! 130px 여백! 완벽한 배경 CSS
     bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)), url('{img_base64}') center bottom/cover no-repeat;"
 else:
     bg_style = "background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)); background-color: #2c3e50;"
@@ -277,7 +279,7 @@ st.markdown("---")
 # 🎯 2. 한전 API 실시간 스마트 다이렉트 조회
 # ---------------------------------------------------------
 st.header("🎯 2. 상세 주소 실시간 1건 조회 (한전 여유용량 확인)")
-st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다. 검색 시 아래 3번 지도가 자동 완성됩니다.")
+st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다. (조회 시 아래 3번 지도가 자동 완성됩니다)")
 
 df_regions = get_region_codes()
 
@@ -286,7 +288,6 @@ search_mode = st.radio("검색 방식 선택", ["📝 통합 주소 검색 (신�
 integrated_addr = ""
 rt_sido, rt_sigg, in_lidong, in_li, in_jibun = "", "", "", "", ""
 
-# 💡 [핵심 로직] on_change=trigger_search 속성을 통해 엔터 키를 누르면 바로 조회 시작!
 if "통합" in search_mode:
     integrated_addr = st.text_input("🔍 조회할 주소를 입력하고 '엔터'를 누르세요", placeholder="예: 김천시 아포대로 123 또는 아포읍 대성리 348", on_change=trigger_search)
 else:
@@ -302,11 +303,16 @@ else:
 
 search_btn_clicked = st.button("🚀 한전 실시간 여유용량 조회하기", use_container_width=True)
 
-# 💡 사용자가 버튼을 클릭했거나, 텍스트창에서 '엔터'를 쳤을 때 모두 실행됨
 if search_btn_clicked or st.session_state.get('do_kepco_search', False):
-    st.session_state['do_kepco_search'] = False # 무한 루프 방지를 위해 즉시 초기화
+    st.session_state['do_kepco_search'] = False 
     
     with st.spinner("주소를 분석하고 한전 서버를 탐색 중입니다..."):
+        
+        # 💡 [핵심 패치 2] 통신 지연 시 붉은색 에러 대신 부드러운 경고창 띄우기
+        if df_regions.empty:
+            st.error("⚠️ 행정구역 코드 서버(공공API) 응답이 지연되고 있습니다. 5초 후 다시 시도해 주세요.")
+            st.stop()
+            
         auto_address = ""
         
         if "통합" in search_mode:
@@ -330,12 +336,11 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
             address_parts = [rt_sido, rt_sigg, in_lidong.strip(), in_li.strip(), in_jibun.strip()]
             auto_address = " ".join([p for p in address_parts if p])
 
-        # 3번 지도로 넘겨줄 주소 저장
         st.session_state['auto_map_address'] = auto_address
 
         target_metroCd, target_cityCd = match_kepco_region_code(rt_sido, rt_sigg, df_regions)
         if not target_metroCd:
-            st.error(f"⚠️ 한전 DB에서 '{rt_sido} {rt_sigg}' 지역을 찾을 수 없습니다.")
+            st.error(f"⚠️ 한전 DB에서 '{rt_sido} {rt_sigg}' 지역을 찾을 수 없습니다. (오타 확인 요망)")
             st.stop()
 
         raw_data = fetch_kepco_realtime(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
