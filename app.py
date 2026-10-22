@@ -80,7 +80,7 @@ def trigger_search():
     st.session_state['do_kepco_search'] = True
 
 # ==========================================
-# 💡 [구글 시트 2 에러 완벽 차단 패치]
+# 💡 구글 시트 2 (비밀 금고) 연동 모듈
 # ==========================================
 def get_bookmark_sheet():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -97,9 +97,8 @@ def get_bookmark_sheet():
         try:
             sheet = doc.worksheet("시트2")
         except:
-            sheet = doc.get_worksheet(1) # 시트2가 없으면 두번째 시트 강제 지정
+            sheet = doc.get_worksheet(1)
             
-        # 💡 [핵심] 시트가 비어있거나, 첫 칸이 공백이면 에러 방지를 위해 헤더를 강제로 밀어넣습니다.
         vals = sheet.get_all_values()
         if not vals or not vals[0] or str(vals[0][0]).strip() == "":
             sheet.clear()
@@ -111,7 +110,6 @@ def get_bookmark_sheet():
 def load_bookmarks():
     sheet = get_bookmark_sheet()
     if sheet:
-        # 💡 에러가 잦은 get_all_records() 대신 안전한 get_all_values() 사용
         vals = sheet.get_all_values()
         if len(vals) > 1:
             headers = vals[0]
@@ -119,17 +117,18 @@ def load_bookmarks():
             for row in vals[1:]:
                 bm = {}
                 for i, h in enumerate(headers):
-                    bm[h] = row[i] if i < len(row) else ""
+                    # 💡 구글 시트의 헤더 문자열 앞뒤 공백을 제거하여 에러 확률 감소
+                    bm[h.strip()] = row[i] if i < len(row) else ""
                 bms.append(bm)
             return bms
     return []
 
 def save_bookmark(bm_data):
-    bms = load_bookmarks()
-    # 중복 저장 방지
-    if not any(str(b.get('full_address', '')) == str(bm_data['full_address']) for b in bms):
-        sheet = get_bookmark_sheet()
-        if sheet:
+    sheet = get_bookmark_sheet()
+    if sheet:
+        bms = load_bookmarks()
+        # 중복 저장 방지 (안전한 .get() 사용)
+        if not any(str(b.get('full_address', '')) == str(bm_data['full_address']) for b in bms):
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             row = [
                 bm_data['full_address'], str(bm_data['metroCd']), str(bm_data['cityCd']), 
@@ -140,7 +139,6 @@ def save_bookmark(bm_data):
 def delete_bookmark(idx):
     sheet = get_bookmark_sheet()
     if sheet:
-        # 데이터의 첫 번째 인덱스(0)는 엑셀의 두 번째 줄(2)에 해당합니다.
         sheet.delete_rows(idx + 2)
 
 # ==========================================
@@ -476,7 +474,6 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
         if raw_data:
             rt_df = display_kepco_dataframe(raw_data)
             
-            # 💡 [핵심 패치] 조회 결과 중 단 1개라도 '🟢 가능' 상태가 있다면 무조건 묻지도 따지지도 않고 구글 시트2로 자동 저장!
             if rt_df['연계가능여부'].any():
                 auto_save_data = {
                     "full_address": auto_address,
@@ -554,7 +551,7 @@ if search_addr_map:
             st.error("⚠️ 주소를 변환할 수 없어 지도를 띄우지 못했습니다.")
 
 # ==========================================
-# 📚 4. 나의 관심 주소 보관함 (관리자 전용 비밀 금고 - 구글 시트 연동)
+# 📚 4. 나의 관심 주소 보관함 (관리자 전용 구글 시트 연동)
 # ==========================================
 if IS_ADMIN:
     st.markdown("---")
@@ -570,7 +567,8 @@ if IS_ADMIN:
             with st.container():
                 col1, col2, col3 = st.columns([6, 3, 1])
                 with col1:
-                    st.markdown(f"#### 📍 {bm['full_address']}")
+                    # 💡 [핵심] KeyError 방지를 위해 .get() 함수로 안전하게 불러옵니다.
+                    st.markdown(f"#### 📍 {bm.get('full_address', '주소 정보 없음')}")
                 with col2:
                     check_btn = st.button("🚀 여유용량 실시간 다시조회", key=f"re_chk_{idx}", use_container_width=True)
                 with col3:
@@ -582,14 +580,21 @@ if IS_ADMIN:
                     
                 if check_btn:
                     with st.spinner("저장된 주소의 데이터를 한전 서버에서 다시 가져옵니다..."):
-                        raw_data, msg = smart_fetch_kepco(str(bm['metroCd']).zfill(2), str(bm['cityCd']).zfill(3), bm['lidong'], bm['li'], str(bm['jibun']))
+                        # .get()을 사용해 빈 깡통 데이터가 들어와도 에러를 원천 차단
+                        m_cd = str(bm.get('metroCd', '00')).zfill(2)
+                        c_cd = str(bm.get('cityCd', '000')).zfill(3)
+                        lidong = bm.get('lidong', '')
+                        li = bm.get('li', '')
+                        jibun = str(bm.get('jibun', ''))
+                        
+                        raw_data, msg = smart_fetch_kepco(m_cd, c_cd, lidong, li, jibun)
                         if msg:
                             if "대신" in msg: st.info(msg)
                             else: st.success(msg)
                             
                         if raw_data:
                             display_kepco_dataframe(raw_data)
-                            st.success(f"✅ 위 3번 지도의 검색창에 **'{bm['full_address']}'**를 입력하시면 즉시 지적도를 확인하실 수 있습니다!")
+                            st.success(f"✅ 위 3번 지도의 검색창에 **'{bm.get('full_address', '')}'**를 입력하시면 즉시 지적도를 확인하실 수 있습니다!")
                         else:
                             st.warning("⚠️ 해당 지역의 한전 데이터가 없습니다.")
             st.markdown("---")
