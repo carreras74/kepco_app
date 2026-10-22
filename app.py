@@ -14,7 +14,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
 
 # ==========================================
-# 💡 스크롤바 영구 고정 패치 (절대 사라지지 않는 붉은색 스크롤바)
+# 💡 스크롤바 영구 고정 패치
 # ==========================================
 st.markdown("""
     <style>
@@ -60,14 +60,52 @@ KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d" 
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
 
+# ==========================================
+# 🔐 사이드바 설정 (디버그 & 관리자 로그인)
+# ==========================================
 st.sidebar.title("🛠️ 시스템 도구")
 DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=False)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔐 관리자 모드")
+admin_pw_input = st.sidebar.text_input("비밀번호를 입력하세요", type="password")
+IS_ADMIN = (admin_pw_input == st.secrets.get("ADMIN_PASSWORD", "1234"))
+
+if IS_ADMIN:
+    st.sidebar.success("✅ 관리자 인증 완료! 숨겨진 4번 금고가 개방되었습니다.")
 
 def trigger_search():
     st.session_state['do_kepco_search'] = True
 
 # ==========================================
-# 📊 기획 1, 3, 4번: 구글 시트 연동 및 랭킹 정렬
+# 💡 북마크(관심 주소) 자동 파일 관리 모듈
+# ==========================================
+BOOKMARK_FILE = "bookmarks.json"
+
+def load_bookmarks():
+    if os.path.exists(BOOKMARK_FILE):
+        try:
+            with open(BOOKMARK_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except: return []
+    return []
+
+def save_bookmark(bm_data):
+    bms = load_bookmarks()
+    if not any(b['full_address'] == bm_data['full_address'] for b in bms):
+        bms.append(bm_data)
+        with open(BOOKMARK_FILE, "w", encoding="utf-8") as f:
+            json.dump(bms, f, ensure_ascii=False, indent=2)
+
+def delete_bookmark(idx):
+    bms = load_bookmarks()
+    if 0 <= idx < len(bms):
+        bms.pop(idx)
+        with open(BOOKMARK_FILE, "w", encoding="utf-8") as f:
+            json.dump(bms, f, ensure_ascii=False, indent=2)
+
+# ==========================================
+# 📊 기획 1번: 구글 시트 연동
 # ==========================================
 @st.cache_data(ttl=600)
 def load_gsheets_data():
@@ -124,7 +162,6 @@ def fetch_kepco_realtime(metroCd, cityCd, lidong="", li="", jibun=""):
     return []
 
 def match_kepco_region_code(sido, sigg, df_regions):
-    # 💡 [핵심] 공공서버가 먹통이어도 앱이 뻗지 않도록 원천 방어 (KeyError 방지)
     if df_regions is None or df_regions.empty or '시도' not in df_regions.columns:
         return None, None
         
@@ -152,8 +189,57 @@ def match_kepco_region_code(sido, sigg, df_regions):
             
     return None, None
 
+def display_kepco_dataframe(raw_data):
+    rt_df = pd.DataFrame(raw_data)
+    rt_df = rt_df.rename(columns={"dlNm": "DL명(읍면동)", "vol3": "DL 여유용량", "vol2": "변압기 여유용량", "vol1": "변전소 여유용량", "substNm": "변전소명"})
+    for col in ["DL 여유용량", "변압기 여유용량", "변전소 여유용량"]:
+        if col in rt_df.columns: rt_df[col] = pd.to_numeric(rt_df[col].astype(str).str.replace(",", ""), errors='coerce').fillna(0) / 1000.0
+    rt_df['연계가능여부'] = (rt_df['변압기 여유용량'] > 0) & (rt_df['변전소 여유용량'] > 0)
+    rt_df['연계상태'] = rt_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
+    rt_df = rt_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False]).drop_duplicates(subset=['DL명(읍면동)']).reset_index(drop=True)
+    rt_df["순위"] = range(1, len(rt_df) + 1)
+    st.dataframe(rt_df[["순위", "연계상태", "DL명(읍면동)", "DL 여유용량", "변압기 여유용량", "변전소 여유용량", "변전소명"]], use_container_width=True, hide_index=True)
+    return rt_df
+
+def smart_fetch_kepco(metroCd, cityCd, lidong, li, jibun):
+    raw_data = fetch_kepco_realtime(metroCd, cityCd, lidong, li, jibun)
+    msg = None
+    
+    if not raw_data and jibun:
+        is_san = "산" in jibun
+        clean_jibun = jibun.replace("산", "").strip()
+        if "-" in clean_jibun:
+            base_num_str = clean_jibun.split("-")[0]
+        else:
+            base_num_str = clean_jibun
+            
+        if base_num_str.isdigit():
+            base_num = int(base_num_str)
+            offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -7, 7, -8, 8, -9, 9, -10, 10]
+            
+            for offset in offsets:
+                if offset == 0 and "-" not in clean_jibun:
+                    continue
+                nearby_j = str(base_num + offset)
+                if is_san: nearby_j = "산" + nearby_j
+                
+                raw_data = fetch_kepco_realtime(metroCd, cityCd, lidong, li, nearby_j)
+                if raw_data:
+                    if offset == 0:
+                        msg = f"💡 한전 DB에 '{jibun}'가 누락되어, 부번을 뗀 대표 지번 **[{nearby_j}번지]** 기준으로 찾았습니다!"
+                    else:
+                        msg = f"💡 한전 DB에 해당 번지가 누락되어, 인접 지번 **[{nearby_j}번지]** 기준으로 연결 가능한 선로를 추적했습니다!"
+                    return raw_data, msg
+                    
+    if not raw_data:
+        raw_data = fetch_kepco_realtime(metroCd, cityCd, lidong, li, "")
+        if raw_data and jibun:
+            msg = f"💡 반경 10개 지번까지 탐색했으나 미등록된 지역입니다. 대신 **'{lidong} {li}' 전체 데이터**를 불러왔습니다."
+            
+    return raw_data, msg
+
 # ==========================================
-# 🗺️ 3부: 카카오 주소 자동 번역기 (신주소 -> 구주소)
+# 🗺️ 3부: 카카오 주소 자동 번역기 
 # ==========================================
 def get_jibun_from_kakao(address):
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
@@ -179,7 +265,6 @@ def get_jibun_from_kakao(address):
                 full_jibun = f"{sido} {sigg} {lidong} {li} {jibun}".strip()
                 full_jibun = re.sub(r'\s+', ' ', full_jibun)
                 
-                # 💡 [핵심] 카카오 법정동 코드에서 한전용 코드를 즉시 빼옵니다!
                 b_code = addr_obj.get('b_code', '')
                 m_cd = b_code[:2] if len(b_code) >= 2 else ""
                 c_cd = b_code[2:5] if len(b_code) >= 5 else ""
@@ -219,8 +304,7 @@ def get_image_base64(filename):
             mime_type = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
             b64_string = base64.b64encode(img_file.read()).decode('utf-8')
             return f"data:{mime_type};base64,{b64_string}"
-    except Exception as e:
-        return ""
+    except: return ""
 
 # ==========================================
 # 🖥️ 앱 화면 구성 시작
@@ -230,7 +314,7 @@ image_filename = "header_bg.png"
 img_base64 = get_image_base64(image_filename)
 
 if img_base64:
-    bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)), url('{img_base64}') center bottom/cover no-repeat;"
+    bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)), url('data:image/png;base64,{img_base64}') center bottom/cover no-repeat;"
 else:
     bg_style = "background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)); background-color: #2c3e50;"
 
@@ -285,7 +369,7 @@ st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 
 
 df_regions = get_region_codes()
 if df_regions.empty:
-    st.info("💡 지역 코드 서버 지연 중입니다. '통합 주소 검색'을 이용하시면 무적(안전)으로 작동합니다.")
+    st.info("💡 지역 코드 서버 지연 중입니다. '통합 주소 검색'을 이용하시면 정상 작동합니다.")
 
 search_mode = st.radio("검색 방식 선택", ["📝 통합 주소 검색 (신주소 자동변환 추천)", "🛠️ 직접 선택 (수동 구주소)"], horizontal=True)
 
@@ -321,7 +405,6 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
                 st.warning("주소를 입력해주세요.")
                 st.stop()
                 
-            # 💡 [핵심 해결] 통합 검색 시 공공서버를 무시하고 카카오 코드만 사용합니다!
             full_jibun, p_sido, p_sigg, p_lidong, p_li, p_jibun, target_metroCd, target_cityCd = get_jibun_from_kakao(integrated_addr)
             
             if not p_sido or not target_metroCd:
@@ -338,7 +421,6 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
             address_parts = [rt_sido, rt_sigg, in_lidong.strip(), in_li.strip(), in_jibun.strip()]
             auto_address = " ".join([p for p in address_parts if p])
             
-            # 수동일 때만 공공서버 표(df_regions)를 거쳐갑니다.
             target_metroCd, target_cityCd = match_kepco_region_code(rt_sido, rt_sigg, df_regions)
             if not target_metroCd:
                 st.error(f"⚠️ 지역 코드 서버가 지연 중입니다. 위의 '통합 주소 검색'을 이용해 주세요.")
@@ -346,49 +428,28 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
 
         st.session_state['auto_map_address'] = auto_address
 
-        raw_data = fetch_kepco_realtime(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
+        raw_data, msg = smart_fetch_kepco(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
         
-        if not raw_data and in_jibun:
-            is_san = "산" in in_jibun
-            clean_jibun = in_jibun.replace("산", "").strip()
-            if "-" in clean_jibun:
-                base_num_str = clean_jibun.split("-")[0]
-            else:
-                base_num_str = clean_jibun
-                
-            if base_num_str.isdigit():
-                base_num = int(base_num_str)
-                offsets = [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -7, 7, -8, 8, -9, 9, -10, 10]
-                
-                for offset in offsets:
-                    if offset == 0 and "-" not in clean_jibun:
-                        continue
-                    nearby_j = str(base_num + offset)
-                    if is_san: nearby_j = "산" + nearby_j
-                    
-                    raw_data = fetch_kepco_realtime(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), nearby_j)
-                    if raw_data:
-                        if offset == 0:
-                            st.success(f"💡 한전 DB에 '{in_jibun}'가 누락되어, 부번을 뗀 대표 지번 **[{nearby_j}번지]** 기준으로 선로를 찾았습니다!")
-                        else:
-                            st.success(f"💡 한전 DB에 해당 번지가 누락되어, 인접 지번 **[{nearby_j}번지]** 기준으로 연결 가능한 선로를 추적했습니다!")
-                        break
-                        
-        if not raw_data:
-            raw_data = fetch_kepco_realtime(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), "")
-            if raw_data and in_jibun:
-                st.info(f"💡 반경 10개 지번까지 탐색했으나 미등록된 지역입니다. 대신 **'{in_lidong} {in_li}' 전체 배전선로 데이터**를 불러왔습니다.")
+        if msg:
+            if "대신" in msg: st.info(msg)
+            else: st.success(msg)
 
         if raw_data:
-            rt_df = pd.DataFrame(raw_data)
-            rt_df = rt_df.rename(columns={"dlNm": "DL명(읍면동)", "vol3": "DL 여유용량", "vol2": "변압기 여유용량", "vol1": "변전소 여유용량", "substNm": "변전소명"})
-            for col in ["DL 여유용량", "변압기 여유용량", "변전소 여유용량"]:
-                if col in rt_df.columns: rt_df[col] = pd.to_numeric(rt_df[col].astype(str).str.replace(",", ""), errors='coerce').fillna(0) / 1000.0
-            rt_df['연계가능여부'] = (rt_df['변압기 여유용량'] > 0) & (rt_df['변전소 여유용량'] > 0)
-            rt_df['연계상태'] = rt_df['연계가능여부'].apply(lambda x: '🟢 가능' if x else '🔴 불가(용량부족)')
-            rt_df = rt_df.sort_values(by=["연계가능여부", "DL 여유용량"], ascending=[False, False]).drop_duplicates(subset=['DL명(읍면동)']).reset_index(drop=True)
-            rt_df["순위"] = range(1, len(rt_df) + 1)
-            st.dataframe(rt_df[["순위", "연계상태", "DL명(읍면동)", "DL 여유용량", "변압기 여유용량", "변전소 여유용량", "변전소명"]], use_container_width=True, hide_index=True)
+            # 데이터를 표 형태로 예쁘게 출력하고, 결과 데이터프레임을 받습니다.
+            rt_df = display_kepco_dataframe(raw_data)
+            
+            # 💡 [핵심 패치] 조회 결과 중 단 1개라도 '🟢 가능' 상태가 있다면 무조건 묻지도 따지지도 않고 4번 보관함으로 자동 저장!
+            if rt_df['연계가능여부'].any():
+                auto_save_data = {
+                    "full_address": auto_address,
+                    "metroCd": target_metroCd,
+                    "cityCd": target_cityCd,
+                    "lidong": in_lidong.strip(),
+                    "li": in_li.strip(),
+                    "jibun": in_jibun.strip()
+                }
+                save_bookmark(auto_save_data)
+                # 사용자가 모르게 은밀히 처리되므로 별도의 성공 메시지는 띄우지 않습니다.
         else:
             st.warning("⚠️ 한전 실시간 API에 해당 지역의 데이터가 아예 존재하지 않습니다.")
 
@@ -454,3 +515,44 @@ if search_addr_map:
             st_folium(m, width=1300, height=750, returned_objects=[], key=f"wms_map_{lat}_{lon}")
         else:
             st.error("⚠️ 주소를 변환할 수 없어 지도를 띄우지 못했습니다.")
+
+# ==========================================
+# 📚 4. 나의 관심 주소 보관함 (관리자 전용 비밀 금고)
+# ==========================================
+if IS_ADMIN:
+    st.markdown("---")
+    st.header("⭐ 4. 알짜배기 관심 주소 자동 수집 보관함 (관리자 전용)")
+    st.markdown("일반 사용자들이 2번 창에서 검색한 주소 중, **단 1개의 선로라도 '🟢 가능' 상태가 뜨면 이곳에 은밀하고 자동으로 수집**됩니다.")
+
+    bookmarks = load_bookmarks()
+
+    if not bookmarks:
+        st.info("💡 아직 수집된 주소가 없습니다. 일반 사용자가 '가능' 지역을 검색하면 이곳에 나타납니다.")
+    else:
+        for idx, bm in enumerate(bookmarks):
+            with st.container():
+                col1, col2, col3 = st.columns([6, 3, 1])
+                with col1:
+                    st.markdown(f"#### 📍 {bm['full_address']}")
+                with col2:
+                    check_btn = st.button("🚀 여유용량 실시간 다시조회", key=f"re_chk_{idx}", use_container_width=True)
+                with col3:
+                    del_btn = st.button("❌ 삭제", key=f"del_bm_{idx}", use_container_width=True)
+                
+                if del_btn:
+                    delete_bookmark(idx)
+                    st.rerun()
+                    
+                if check_btn:
+                    with st.spinner("저장된 주소의 데이터를 한전 서버에서 다시 가져옵니다..."):
+                        raw_data, msg = smart_fetch_kepco(bm['metroCd'], bm['cityCd'], bm['lidong'], bm['li'], bm['jibun'])
+                        if msg:
+                            if "대신" in msg: st.info(msg)
+                            else: st.success(msg)
+                            
+                        if raw_data:
+                            display_kepco_dataframe(raw_data)
+                            st.success(f"✅ 위 3번 지도의 검색창에 **'{bm['full_address']}'**를 입력하시면 즉시 지적도를 확인하실 수 있습니다!")
+                        else:
+                            st.warning("⚠️ 해당 지역의 한전 데이터가 없습니다.")
+            st.markdown("---")
