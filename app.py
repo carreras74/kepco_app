@@ -80,10 +80,9 @@ def trigger_search():
     st.session_state['do_kepco_search'] = True
 
 # ==========================================
-# 💡 [핵심 패치] 구글 시트 영구 금고 (시트2) 연결 모듈
+# 💡 [구글 시트 2 에러 완벽 차단 패치]
 # ==========================================
 def get_bookmark_sheet():
-    """구글 시트의 '시트2'를 찾아 반환합니다."""
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
         if "GCP_CREDENTIALS" in st.secrets:
@@ -95,14 +94,15 @@ def get_bookmark_sheet():
         client = gspread.authorize(creds)
         doc = client.open_by_url(GOOGLE_SHEET_URL)
         
-        # '시트2' 이름으로 찾고 없으면 두 번째(인덱스 1) 시트를 가져옵니다.
         try:
             sheet = doc.worksheet("시트2")
         except:
-            sheet = doc.get_worksheet(1)
+            sheet = doc.get_worksheet(1) # 시트2가 없으면 두번째 시트 강제 지정
             
-        # 시트가 완전 비어있으면 엑셀 첫 줄에 이름표(헤더)를 만듭니다.
-        if not sheet.get_all_values():
+        # 💡 [핵심] 시트가 비어있거나, 첫 칸이 공백이면 에러 방지를 위해 헤더를 강제로 밀어넣습니다.
+        vals = sheet.get_all_values()
+        if not vals or not vals[0] or str(vals[0][0]).strip() == "":
+            sheet.clear()
             sheet.append_row(["full_address", "metroCd", "cityCd", "lidong", "li", "jibun", "저장시간"])
         return sheet
     except:
@@ -111,15 +111,25 @@ def get_bookmark_sheet():
 def load_bookmarks():
     sheet = get_bookmark_sheet()
     if sheet:
-        return sheet.get_all_records()
+        # 💡 에러가 잦은 get_all_records() 대신 안전한 get_all_values() 사용
+        vals = sheet.get_all_values()
+        if len(vals) > 1:
+            headers = vals[0]
+            bms = []
+            for row in vals[1:]:
+                bm = {}
+                for i, h in enumerate(headers):
+                    bm[h] = row[i] if i < len(row) else ""
+                bms.append(bm)
+            return bms
     return []
 
 def save_bookmark(bm_data):
-    sheet = get_bookmark_sheet()
-    if sheet:
-        records = sheet.get_all_records()
-        # 중복 저장 방지
-        if not any(str(r.get('full_address', '')) == str(bm_data['full_address']) for r in records):
+    bms = load_bookmarks()
+    # 중복 저장 방지
+    if not any(str(b.get('full_address', '')) == str(bm_data['full_address']) for b in bms):
+        sheet = get_bookmark_sheet()
+        if sheet:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             row = [
                 bm_data['full_address'], str(bm_data['metroCd']), str(bm_data['cityCd']), 
@@ -130,7 +140,7 @@ def save_bookmark(bm_data):
 def delete_bookmark(idx):
     sheet = get_bookmark_sheet()
     if sheet:
-        # 구글 시트는 1번 줄이 이름표이므로, 데이터의 첫 번째(0)는 엑셀의 2번 줄입니다.
+        # 데이터의 첫 번째 인덱스(0)는 엑셀의 두 번째 줄(2)에 해당합니다.
         sheet.delete_rows(idx + 2)
 
 # ==========================================
@@ -466,7 +476,7 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
         if raw_data:
             rt_df = display_kepco_dataframe(raw_data)
             
-            # 💡 [구글 시트 연동 패치] 결과 중 '🟢 가능' 상태가 1개라도 있으면 구글 시트2 로 영구 저장!
+            # 💡 [핵심 패치] 조회 결과 중 단 1개라도 '🟢 가능' 상태가 있다면 무조건 묻지도 따지지도 않고 구글 시트2로 자동 저장!
             if rt_df['연계가능여부'].any():
                 auto_save_data = {
                     "full_address": auto_address,
