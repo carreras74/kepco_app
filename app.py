@@ -10,6 +10,7 @@ import re
 import gspread
 import base64
 from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
 
 st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
 
@@ -59,6 +60,7 @@ VWORLD_KEY = "013A53E5-52AB-4FD2-AC9D-B7D4A85D5667"
 KEPCO_KEY = "L5uHvUC6Mm5zy3sbEza5J690Lq82eaNdBHH11K2o"
 KAKAO_KEY = "b5908f52b46962e646bf12c6f70a364d" 
 DOMAIN = "https://kepcoapp-biwrxqmgtjrbamcm48ikmr.streamlit.app"
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1QsHxBwA40ElWl9AAMf1HrKXjXRI_QyhHdgTOqWnZQQk/edit"
 
 # ==========================================
 # 🔐 사이드바 설정 (디버그 & 관리자 로그인)
@@ -78,34 +80,61 @@ def trigger_search():
     st.session_state['do_kepco_search'] = True
 
 # ==========================================
-# 💡 북마크(관심 주소) 자동 파일 관리 모듈
+# 💡 [핵심 패치] 구글 시트 영구 금고 (시트2) 연결 모듈
 # ==========================================
-BOOKMARK_FILE = "bookmarks.json"
+def get_bookmark_sheet():
+    """구글 시트의 '시트2'를 찾아 반환합니다."""
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    try:
+        if "GCP_CREDENTIALS" in st.secrets:
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(st.secrets["GCP_CREDENTIALS"]), scope)
+        elif os.path.exists("google_key.json"):
+            creds = ServiceAccountCredentials.from_json_keyfile_name("google_key.json", scope)
+        else: return None
+
+        client = gspread.authorize(creds)
+        doc = client.open_by_url(GOOGLE_SHEET_URL)
+        
+        # '시트2' 이름으로 찾고 없으면 두 번째(인덱스 1) 시트를 가져옵니다.
+        try:
+            sheet = doc.worksheet("시트2")
+        except:
+            sheet = doc.get_worksheet(1)
+            
+        # 시트가 완전 비어있으면 엑셀 첫 줄에 이름표(헤더)를 만듭니다.
+        if not sheet.get_all_values():
+            sheet.append_row(["full_address", "metroCd", "cityCd", "lidong", "li", "jibun", "저장시간"])
+        return sheet
+    except:
+        return None
 
 def load_bookmarks():
-    if os.path.exists(BOOKMARK_FILE):
-        try:
-            with open(BOOKMARK_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: return []
+    sheet = get_bookmark_sheet()
+    if sheet:
+        return sheet.get_all_records()
     return []
 
 def save_bookmark(bm_data):
-    bms = load_bookmarks()
-    if not any(b['full_address'] == bm_data['full_address'] for b in bms):
-        bms.append(bm_data)
-        with open(BOOKMARK_FILE, "w", encoding="utf-8") as f:
-            json.dump(bms, f, ensure_ascii=False, indent=2)
+    sheet = get_bookmark_sheet()
+    if sheet:
+        records = sheet.get_all_records()
+        # 중복 저장 방지
+        if not any(str(r.get('full_address', '')) == str(bm_data['full_address']) for r in records):
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            row = [
+                bm_data['full_address'], str(bm_data['metroCd']), str(bm_data['cityCd']), 
+                bm_data['lidong'], bm_data['li'], bm_data['jibun'], now
+            ]
+            sheet.append_row(row)
 
 def delete_bookmark(idx):
-    bms = load_bookmarks()
-    if 0 <= idx < len(bms):
-        bms.pop(idx)
-        with open(BOOKMARK_FILE, "w", encoding="utf-8") as f:
-            json.dump(bms, f, ensure_ascii=False, indent=2)
+    sheet = get_bookmark_sheet()
+    if sheet:
+        # 구글 시트는 1번 줄이 이름표이므로, 데이터의 첫 번째(0)는 엑셀의 2번 줄입니다.
+        sheet.delete_rows(idx + 2)
 
 # ==========================================
-# 📊 기획 1번: 구글 시트 연동
+# 📊 기획 1번: 전체 랭킹 연동 (시트 1)
 # ==========================================
 @st.cache_data(ttl=600)
 def load_gsheets_data():
@@ -118,7 +147,7 @@ def load_gsheets_data():
         else: return pd.DataFrame()
 
         client = gspread.authorize(creds)
-        sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/1QsHxBwA40ElWl9AAMf1HrKXjXRI_QyhHdgTOqWnZQQk/edit?gid=2075043511#gid=2075043511").get_worksheet(0)
+        sheet = client.open_by_url(GOOGLE_SHEET_URL).get_worksheet(0)
         df = pd.DataFrame(sheet.get_all_records())
 
         for col in ["DL 여유용량", "DL 누적연계용량", "변압기 여유용량", "변전소 여유용량", "변압기 누적 연계용량"]:
@@ -435,10 +464,9 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
             else: st.success(msg)
 
         if raw_data:
-            # 데이터를 표 형태로 예쁘게 출력하고, 결과 데이터프레임을 받습니다.
             rt_df = display_kepco_dataframe(raw_data)
             
-            # 💡 [핵심 패치] 조회 결과 중 단 1개라도 '🟢 가능' 상태가 있다면 무조건 묻지도 따지지도 않고 4번 보관함으로 자동 저장!
+            # 💡 [구글 시트 연동 패치] 결과 중 '🟢 가능' 상태가 1개라도 있으면 구글 시트2 로 영구 저장!
             if rt_df['연계가능여부'].any():
                 auto_save_data = {
                     "full_address": auto_address,
@@ -449,7 +477,6 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
                     "jibun": in_jibun.strip()
                 }
                 save_bookmark(auto_save_data)
-                # 사용자가 모르게 은밀히 처리되므로 별도의 성공 메시지는 띄우지 않습니다.
         else:
             st.warning("⚠️ 한전 실시간 API에 해당 지역의 데이터가 아예 존재하지 않습니다.")
 
@@ -517,12 +544,12 @@ if search_addr_map:
             st.error("⚠️ 주소를 변환할 수 없어 지도를 띄우지 못했습니다.")
 
 # ==========================================
-# 📚 4. 나의 관심 주소 보관함 (관리자 전용 비밀 금고)
+# 📚 4. 나의 관심 주소 보관함 (관리자 전용 비밀 금고 - 구글 시트 연동)
 # ==========================================
 if IS_ADMIN:
     st.markdown("---")
-    st.header("⭐ 4. 알짜배기 관심 주소 자동 수집 보관함 (관리자 전용)")
-    st.markdown("일반 사용자들이 2번 창에서 검색한 주소 중, **단 1개의 선로라도 '🟢 가능' 상태가 뜨면 이곳에 은밀하고 자동으로 수집**됩니다.")
+    st.header("⭐ 4. 알짜배기 관심 주소 자동 수집 보관함 (관리자 전용 구글 시트)")
+    st.markdown("일반 사용자들이 검색한 주소 중, **'🟢 가능' 상태가 뜨는 곳만 은밀하게 구글 시트('시트2')에 자동 저장**되어 영구 보존됩니다.")
 
     bookmarks = load_bookmarks()
 
@@ -545,7 +572,7 @@ if IS_ADMIN:
                     
                 if check_btn:
                     with st.spinner("저장된 주소의 데이터를 한전 서버에서 다시 가져옵니다..."):
-                        raw_data, msg = smart_fetch_kepco(bm['metroCd'], bm['cityCd'], bm['lidong'], bm['li'], bm['jibun'])
+                        raw_data, msg = smart_fetch_kepco(str(bm['metroCd']).zfill(2), str(bm['cityCd']).zfill(3), bm['lidong'], bm['li'], str(bm['jibun']))
                         if msg:
                             if "대신" in msg: st.info(msg)
                             else: st.success(msg)
