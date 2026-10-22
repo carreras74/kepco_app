@@ -71,7 +71,7 @@ DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=Fa
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔐 관리자 모드")
 admin_pw_input = st.sidebar.text_input("비밀번호를 입력하세요", type="password")
-IS_ADMIN = (admin_pw_input == st.secrets.get("ADMIN_PASSWORD", "1234"))
+IS_ADMIN = (admin_pw_input == st.secrets.get("ADMIN_PASSWORD", "9119"))
 
 if IS_ADMIN:
     st.sidebar.success("✅ 관리자 인증 완료! 숨겨진 4번 금고가 개방되었습니다.")
