@@ -80,7 +80,7 @@ def trigger_search():
     st.session_state['do_kepco_search'] = True
 
 # ==========================================
-# 💡 [핵심 패치] 구글 시트 2 이름표(Header) 자동 복구 모듈
+# 💡 구글 시트 2 (비밀 금고) 연동 모듈
 # ==========================================
 def get_bookmark_sheet():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -100,15 +100,9 @@ def get_bookmark_sheet():
             sheet = doc.get_worksheet(1)
             
         vals = sheet.get_all_values()
-        expected_headers = ["full_address", "metroCd", "cityCd", "lidong", "li", "jibun", "저장시간"]
-        
-        if not vals:
-            # 아예 텅 비어있으면 이름표 새로 추가
-            sheet.append_row(expected_headers)
-        elif "full_address" not in vals[0]:
-            # 1행이 실제 데이터로 시작하면 기존 데이터를 밀어내고 1행에 이름표 강제 삽입
-            sheet.insert_row(expected_headers, 1)
-            
+        if not vals or not vals[0] or str(vals[0][0]).strip() == "":
+            sheet.clear()
+            sheet.append_row(["full_address", "metroCd", "cityCd", "lidong", "li", "jibun", "저장시간"])
         return sheet
     except:
         return None
@@ -280,7 +274,7 @@ def smart_fetch_kepco(metroCd, cityCd, lidong, li, jibun):
     return raw_data, msg
 
 # ==========================================
-# 🗺️ 3부: 카카오 주소 자동 번역기 
+# 🗺️ 3부: 카카오 주소 자동 번역기
 # ==========================================
 def get_jibun_from_kakao(address):
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
@@ -336,26 +330,30 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
-def get_image_base64(filename):
+# 💡 [핵심 패치] 확장자 대/소문자, png/jpg 상관없이 무조건 샅샅이 뒤져서 찾아냅니다!
+def get_image_base64():
     try:
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(current_dir, filename)
-        with open(file_path, "rb") as img_file:
-            ext = filename.split('.')[-1].lower()
-            mime_type = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
-            b64_string = base64.b64encode(img_file.read()).decode('utf-8')
-            return f"data:{mime_type};base64,{b64_string}"
+        # header_bg 라는 이름을 가진 모든 확장자 탐색
+        for ext in ['png', 'jpg', 'jpeg', 'PNG', 'JPG', 'JPEG']:
+            file_path = os.path.join(current_dir, f"header_bg.{ext}")
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as img_file:
+                    mime_type = "image/jpeg" if ext.lower() in ["jpg", "jpeg"] else "image/png"
+                    b64_string = base64.b64encode(img_file.read()).decode('utf-8')
+                    return f"data:{mime_type};base64,{b64_string}"
+        return ""
     except: return ""
 
 # ==========================================
 # 🖥️ 앱 화면 구성 시작
 # ==========================================
 
-image_filename = "header_bg.png" 
-img_base64 = get_image_base64(image_filename)
+# 알아서 찾으므로 파일명을 따로 지정할 필요가 없습니다.
+img_base64 = get_image_base64()
 
 if img_base64:
-    bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)), url('data:image/png;base64,{img_base64}') center bottom/cover no-repeat;"
+    bg_style = f"background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)), url('{img_base64}') center bottom/cover no-repeat;"
 else:
     bg_style = "background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3)); background-color: #2c3e50;"
 
