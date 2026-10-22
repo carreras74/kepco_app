@@ -80,7 +80,7 @@ def trigger_search():
     st.session_state['do_kepco_search'] = True
 
 # ==========================================
-# 💡 구글 시트 2 (비밀 금고) 연동 모듈
+# 💡 [핵심 패치] 구글 시트 2 이름표(Header) 자동 복구 모듈
 # ==========================================
 def get_bookmark_sheet():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -100,9 +100,15 @@ def get_bookmark_sheet():
             sheet = doc.get_worksheet(1)
             
         vals = sheet.get_all_values()
-        if not vals or not vals[0] or str(vals[0][0]).strip() == "":
-            sheet.clear()
-            sheet.append_row(["full_address", "metroCd", "cityCd", "lidong", "li", "jibun", "저장시간"])
+        expected_headers = ["full_address", "metroCd", "cityCd", "lidong", "li", "jibun", "저장시간"]
+        
+        if not vals:
+            # 아예 텅 비어있으면 이름표 새로 추가
+            sheet.append_row(expected_headers)
+        elif "full_address" not in vals[0]:
+            # 1행이 실제 데이터로 시작하면 기존 데이터를 밀어내고 1행에 이름표 강제 삽입
+            sheet.insert_row(expected_headers, 1)
+            
         return sheet
     except:
         return None
@@ -117,7 +123,6 @@ def load_bookmarks():
             for row in vals[1:]:
                 bm = {}
                 for i, h in enumerate(headers):
-                    # 💡 구글 시트의 헤더 문자열 앞뒤 공백을 제거하여 에러 확률 감소
                     bm[h.strip()] = row[i] if i < len(row) else ""
                 bms.append(bm)
             return bms
@@ -127,7 +132,6 @@ def save_bookmark(bm_data):
     sheet = get_bookmark_sheet()
     if sheet:
         bms = load_bookmarks()
-        # 중복 저장 방지 (안전한 .get() 사용)
         if not any(str(b.get('full_address', '')) == str(bm_data['full_address']) for b in bms):
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             row = [
@@ -567,7 +571,6 @@ if IS_ADMIN:
             with st.container():
                 col1, col2, col3 = st.columns([6, 3, 1])
                 with col1:
-                    # 💡 [핵심] KeyError 방지를 위해 .get() 함수로 안전하게 불러옵니다.
                     st.markdown(f"#### 📍 {bm.get('full_address', '주소 정보 없음')}")
                 with col2:
                     check_btn = st.button("🚀 여유용량 실시간 다시조회", key=f"re_chk_{idx}", use_container_width=True)
@@ -580,7 +583,6 @@ if IS_ADMIN:
                     
                 if check_btn:
                     with st.spinner("저장된 주소의 데이터를 한전 서버에서 다시 가져옵니다..."):
-                        # .get()을 사용해 빈 깡통 데이터가 들어와도 에러를 원천 차단
                         m_cd = str(bm.get('metroCd', '00')).zfill(2)
                         c_cd = str(bm.get('cityCd', '000')).zfill(3)
                         lidong = bm.get('lidong', '')
