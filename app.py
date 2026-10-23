@@ -71,7 +71,7 @@ DEBUG_MODE = st.sidebar.checkbox("🔧 통신 디버그 모드 켜기", value=Fa
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔐 관리자 모드")
 admin_pw_input = st.sidebar.text_input("비밀번호를 입력하세요", type="password")
-IS_ADMIN = (admin_pw_input == st.secrets.get("ADMIN_PASSWORD", "9119"))
+IS_ADMIN = (admin_pw_input == st.secrets.get("ADMIN_PASSWORD", "1234"))
 
 if IS_ADMIN:
     st.sidebar.success("✅ 관리자 인증 완료! 숨겨진 4번 금고가 개방되었습니다.")
@@ -80,7 +80,7 @@ def trigger_search():
     st.session_state['do_kepco_search'] = True
 
 # ==========================================
-# 💡 구글 시트 2 (비밀 금고) 연동 모듈
+# 💡 구글 시트 2 이름표(Header) 자동 복구 모듈
 # ==========================================
 def get_bookmark_sheet():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -100,9 +100,13 @@ def get_bookmark_sheet():
             sheet = doc.get_worksheet(1)
             
         vals = sheet.get_all_values()
-        if not vals or not vals[0] or str(vals[0][0]).strip() == "":
-            sheet.clear()
-            sheet.append_row(["full_address", "metroCd", "cityCd", "lidong", "li", "jibun", "저장시간"])
+        expected_headers = ["full_address", "metroCd", "cityCd", "lidong", "li", "jibun", "저장시간"]
+        
+        if not vals:
+            sheet.append_row(expected_headers)
+        elif "full_address" not in vals[0]:
+            sheet.insert_row(expected_headers, 1)
+            
         return sheet
     except:
         return None
@@ -330,11 +334,26 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
-# 💡 [핵심 패치] 확장자 대/소문자, png/jpg 상관없이 무조건 샅샅이 뒤져서 찾아냅니다!
+# 💡 [핵심 추가] 변전소 전용 좌표 탐색기 (카카오 키워드 검색 활용)
+def get_substation_coord(subst_name, region_hint):
+    headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
+    url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
+    
+    # "아포S/S" 같은 이름을 "아포변전소"로 정제하여 검색
+    clean_name = subst_name.replace("S/S", "").replace("s/s", "").strip()
+    queries = [f"{region_hint} {clean_name}변전소", f"{clean_name}변전소"]
+    
+    for q in queries:
+        try:
+            res = requests.get(url_kw, headers=headers, params={"query": q}, timeout=5).json()
+            if res.get('documents'):
+                return float(res['documents'][0]['y']), float(res['documents'][0]['x'])
+        except: pass
+    return None, None
+
 def get_image_base64():
     try:
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        # header_bg 라는 이름을 가진 모든 확장자 탐색
         for ext in ['png', 'jpg', 'jpeg', 'PNG', 'JPG', 'JPEG']:
             file_path = os.path.join(current_dir, f"header_bg.{ext}")
             if os.path.exists(file_path):
@@ -349,7 +368,6 @@ def get_image_base64():
 # 🖥️ 앱 화면 구성 시작
 # ==========================================
 
-# 알아서 찾으므로 파일명을 따로 지정할 필요가 없습니다.
 img_base64 = get_image_base64()
 
 if img_base64:
@@ -476,6 +494,11 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
         if raw_data:
             rt_df = display_kepco_dataframe(raw_data)
             
+            # 💡 [핵심 추가] 결과에 나온 변전소 목록을 중복 제거하여 세션에 임시 저장 (3번 지도 표시용)
+            if '변전소명' in rt_df.columns:
+                unique_substations = rt_df['변전소명'].dropna().unique().tolist()
+                st.session_state['found_substations'] = unique_substations
+            
             if rt_df['연계가능여부'].any():
                 auto_save_data = {
                     "full_address": auto_address,
@@ -488,25 +511,26 @@ if search_btn_clicked or st.session_state.get('do_kepco_search', False):
                 save_bookmark(auto_save_data)
         else:
             st.warning("⚠️ 한전 실시간 API에 해당 지역의 데이터가 아예 존재하지 않습니다.")
+            st.session_state['found_substations'] = []
 
 st.markdown("---")
 
 # ==========================================
-# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱
+# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱 (⚡변전소 마커 패치)
 # ==========================================
 st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
-st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**됩니다. 원하시면 지번을 직접 타이핑해서 검색하실 수도 있습니다.")
+st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**되며, 관할 **변전소의 위치(파란색 번개 마커)가 함께 표시**됩니다.")
 
 default_map_addr = st.session_state.get('auto_map_address', "")
 search_addr_map = st.text_input("🔍 지도 주소 직접 검색 (2번에서 검색 시 자동 완성됨)", value=default_map_addr, placeholder="예: 김천시 아포읍 대성리 348")
 
 if search_addr_map:
-    with st.spinner("해당 지번의 위성지도와 지적도를 불러옵니다..."):
+    with st.spinner("해당 지번의 위성지도와 관할 변전소 위치를 추적 중입니다..."):
         lat, lon = get_kakao_coord(search_addr_map)
         
         if lat is not None:
             has_jibun = bool(re.search(r'\d', search_addr_map))
-            start_zoom = 19 if has_jibun else 15
+            start_zoom = 15 # 변전소까지 넓게 보기 위해 기본 줌 축소
             m = folium.Map(location=[lat, lon], zoom_start=start_zoom, max_zoom=22, tiles=None)
 
             folium.TileLayer(
@@ -545,7 +569,24 @@ if search_addr_map:
                     show=True
                 ).add_to(m)
 
+            # 🔴 타겟 주소 마커 (빨간색)
             folium.Marker([lat, lon], popup=f"<b>{search_addr_map}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
+            
+            # 🔵 [핵심 추가] 2번에서 찾은 변전소 위치 마커 (파란색 번개)
+            found_substations = st.session_state.get('found_substations', [])
+            region_hint = search_addr_map.split()[0] if search_addr_map else ""
+            
+            for sub_name in found_substations:
+                if str(sub_name).strip() and str(sub_name).strip() != "nan":
+                    sub_lat, sub_lon = get_substation_coord(str(sub_name), region_hint)
+                    if sub_lat is not None:
+                        folium.Marker(
+                            [sub_lat, sub_lon], 
+                            popup=f"<b>⚡ {sub_name} 변전소</b>", 
+                            tooltip=f"{sub_name} (운영중)",
+                            icon=folium.Icon(color='blue', icon='bolt', prefix='fa')
+                        ).add_to(m)
+
             folium.LayerControl(position='topright').add_to(m)
             
             st_folium(m, width=1300, height=750, returned_objects=[], key=f"wms_map_{lat}_{lon}")
