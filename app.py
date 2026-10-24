@@ -372,11 +372,23 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
+# 💡 [핵심 패치] 변전소 전용 좌표 탐색기 (검색어 다중 조합)
 def get_substation_coord(subst_name, region_hint):
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
     url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
-    clean_name = subst_name.replace("S/S", "").replace("s/s", "").strip()
-    queries = [f"{region_hint} {clean_name}변전소", f"{clean_name}변전소"]
+    
+    # 불필요한 단어 제거하고 순수 이름만 추출 (예: "아포S/S" -> "아포")
+    clean_name = re.sub(r'(S/S|s/s|변전소|전력소)', '', str(subst_name)).strip()
+    
+    # 카카오 지도에 검색해볼 다양한 키워드 조합
+    queries = [
+        f"{region_hint} {clean_name}변전소",
+        f"{region_hint} {clean_name}전력소",
+        f"{clean_name}변전소",
+        f"{clean_name}전력소",
+        f"{clean_name} S/S",
+        f"{clean_name}변환소"
+    ]
     
     for q in queries:
         try:
@@ -500,6 +512,7 @@ with sec2_container:
                     st.stop()
 
             st.session_state['auto_map_address'] = auto_address
+            
             sync_ranking_dropdown(rt_sido, rt_sigg, df_gs)
 
             raw_data, msg = smart_fetch_kepco(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
@@ -530,7 +543,7 @@ with sec2_container:
                 st.session_state['found_substations'] = []
 
 # ---------------------------------------------------------
-# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹
+# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 
 # ---------------------------------------------------------
 with sec1_container:
     st.header("📊 1. 전체 지역 랭킹 조회 (매일 자동 업데이트 엑셀 연동)")
@@ -614,7 +627,8 @@ with sec3_container:
                 folium.Marker([lat, lon], popup=f"<b>{search_addr_map}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
                 
                 found_substations = st.session_state.get('found_substations', [])
-                region_hint = search_addr_map.split()[0] if search_addr_map else ""
+                # 💡 [핵심 패치] 지역 힌트를 강화하여 카카오가 엉뚱한 동네의 동명이인 변전소를 찾지 않도록 방어
+                region_hint = " ".join(search_addr_map.split()[:2]) if search_addr_map else ""
                 
                 for sub_name in found_substations:
                     if str(sub_name).strip() and str(sub_name).strip() != "nan":
