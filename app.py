@@ -372,24 +372,28 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
-# 💡 [핵심 패치] 변전소 전용 좌표 탐색기 (검색어 다중 조합)
+# 💡 [핵심 광역 스캔 패치] 내가 찍은 좌표(lat, lon)를 기준으로 반경 20km 이내의 인프라를 모두 긁어옵니다.
+def get_all_nearby_facilities(lat, lon, radius=20000):
+    headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
+    url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
+    facilities = {}
+    
+    # 변전소, 전력소, 변환소를 20km 반경 내에서 모두 융단폭격 검색
+    for kw in ["변전소", "전력소", "변환소"]:
+        try:
+            res = requests.get(url_kw, headers=headers, params={"query": kw, "y": lat, "x": lon, "radius": radius}, timeout=5).json()
+            if res.get('documents'):
+                for doc in res['documents']:
+                    facilities[doc['place_name']] = (float(doc['y']), float(doc['x']))
+        except: pass
+    return facilities
+
+# 혹시 20km 밖에 있는 특정 관할 변전소가 있을 경우를 대비한 단건 스캐너 유지
 def get_substation_coord(subst_name, region_hint):
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
     url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
-    
-    # 불필요한 단어 제거하고 순수 이름만 추출 (예: "아포S/S" -> "아포")
     clean_name = re.sub(r'(S/S|s/s|변전소|전력소)', '', str(subst_name)).strip()
-    
-    # 카카오 지도에 검색해볼 다양한 키워드 조합
-    queries = [
-        f"{region_hint} {clean_name}변전소",
-        f"{region_hint} {clean_name}전력소",
-        f"{clean_name}변전소",
-        f"{clean_name}전력소",
-        f"{clean_name} S/S",
-        f"{clean_name}변환소"
-    ]
-    
+    queries = [f"{region_hint} {clean_name}변전소", f"{clean_name}변전소"]
     for q in queries:
         try:
             res = requests.get(url_kw, headers=headers, params={"query": q}, timeout=5).json()
@@ -512,7 +516,6 @@ with sec2_container:
                     st.stop()
 
             st.session_state['auto_map_address'] = auto_address
-            
             sync_ranking_dropdown(rt_sido, rt_sigg, df_gs)
 
             raw_data, msg = smart_fetch_kepco(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
@@ -543,7 +546,7 @@ with sec2_container:
                 st.session_state['found_substations'] = []
 
 # ---------------------------------------------------------
-# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹 
+# 📊 1. 구글 시트 기반 시도별 여유용량 랭킹
 # ---------------------------------------------------------
 with sec1_container:
     st.header("📊 1. 전체 지역 랭킹 조회 (매일 자동 업데이트 엑셀 연동)")
@@ -570,22 +573,22 @@ with sec1_container:
         st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크롤러를 실행해 주세요.")
 
 # ---------------------------------------------------------
-# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱
+# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱 (광역 스캔 적용)
 # ---------------------------------------------------------
 with sec3_container:
     st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
-    st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**되며, 관할 **변전소의 위치(파란색 번개 마커)가 함께 표시**됩니다.")
+    st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 지적도가 완성**되며, 반경 **20km 이내의 모든 변전소/전력소(파란색 ⚡)가 함께 표시**됩니다.")
 
     default_map_addr = st.session_state.get('auto_map_address', "")
     search_addr_map = st.text_input("🔍 지도 주소 직접 검색 (2번에서 검색 시 자동 완성됨)", value=default_map_addr, placeholder="예: 김천시 아포읍 대성리 348")
 
     if search_addr_map:
-        with st.spinner("해당 지번의 위성지도와 관할 변전소 위치를 추적 중입니다..."):
+        with st.spinner("해당 지번의 위성지도와 주변 전력 인프라 위치를 추적 중입니다..."):
             lat, lon = get_kakao_coord(search_addr_map)
             
             if lat is not None:
                 has_jibun = bool(re.search(r'\d', search_addr_map))
-                start_zoom = 15
+                start_zoom = 13 # 주변 20km 변전소를 한눈에 보기 위해 줌을 살짝 풀어서 렌더링
                 m = folium.Map(location=[lat, lon], zoom_start=start_zoom, max_zoom=22, tiles=None)
 
                 folium.TileLayer(
@@ -624,22 +627,36 @@ with sec3_container:
                         show=True
                     ).add_to(m)
 
+                # 📍 타겟 지역 핀 (빨간색)
                 folium.Marker([lat, lon], popup=f"<b>{search_addr_map}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
                 
+                # 💡 [핵심] 반경 20km 이내의 모든 변전소/전력소/변환소 광역 탐색 (파란색 번개)
+                nearby_facilities = get_all_nearby_facilities(lat, lon, radius=20000)
+                for f_name, (f_lat, f_lon) in nearby_facilities.items():
+                    folium.Marker(
+                        [f_lat, f_lon], 
+                        popup=f"<b>⚡ {f_name}</b>", 
+                        tooltip=f"{f_name}",
+                        icon=folium.Icon(color='blue', icon='bolt', prefix='fa')
+                    ).add_to(m)
+                
+                # 💡 한전에서 콕 집어준 관할 변전소가 반경 밖에 있을 경우를 대비한 2차 탐색 (보라색 번개)
                 found_substations = st.session_state.get('found_substations', [])
-                # 💡 [핵심 패치] 지역 힌트를 강화하여 카카오가 엉뚱한 동네의 동명이인 변전소를 찾지 않도록 방어
                 region_hint = " ".join(search_addr_map.split()[:2]) if search_addr_map else ""
                 
                 for sub_name in found_substations:
                     if str(sub_name).strip() and str(sub_name).strip() != "nan":
-                        sub_lat, sub_lon = get_substation_coord(str(sub_name), region_hint)
-                        if sub_lat is not None:
-                            folium.Marker(
-                                [sub_lat, sub_lon], 
-                                popup=f"<b>⚡ {sub_name} 변전소</b>", 
-                                tooltip=f"{sub_name} (운영중)",
-                                icon=folium.Icon(color='blue', icon='bolt', prefix='fa')
-                            ).add_to(m)
+                        clean_sub = re.sub(r'(S/S|s/s|변전소|전력소)', '', str(sub_name)).strip()
+                        # 이미 파란색으로 찍힌 주변 변전소 명칭에 이 관할 변전소가 없으면 추가로 찍음
+                        if not any(clean_sub in k for k in nearby_facilities.keys()):
+                            sub_lat, sub_lon = get_substation_coord(str(sub_name), region_hint)
+                            if sub_lat is not None:
+                                folium.Marker(
+                                    [sub_lat, sub_lon], 
+                                    popup=f"<b>⚡ {sub_name} 변전소 (관할)</b>", 
+                                    tooltip=f"{sub_name} (한전 지정)",
+                                    icon=folium.Icon(color='purple', icon='bolt', prefix='fa')
+                                ).add_to(m)
 
                 folium.LayerControl(position='topright').add_to(m)
                 st_folium(m, width=1300, height=750, returned_objects=[], key=f"wms_map_{lat}_{lon}")
