@@ -7,15 +7,16 @@ import json
 import os
 import time
 import re
+import math
 import gspread
 import base64
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-st.set_page_config(page_title="전국 송전여유용량 대시보드", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="전국 송전여유용량 및 태양광 수지분석 APP", page_icon="⚡", layout="wide")
 
 # ==========================================
-# 💡 스크롤바 영구 고정 패치
+# 💡 스크롤바 영구 고정 패치 (절대 사라지지 않는 붉은색 스크롤바)
 # ==========================================
 st.markdown("""
     <style>
@@ -74,7 +75,7 @@ admin_pw_input = st.sidebar.text_input("비밀번호를 입력하세요", type="
 IS_ADMIN = (admin_pw_input == st.secrets.get("ADMIN_PASSWORD", "1234"))
 
 if IS_ADMIN:
-    st.sidebar.success("✅ 관리자 인증 완료! 숨겨진 4번 금고가 개방되었습니다.")
+    st.sidebar.success("✅ 관리자 인증 완료! 숨겨진 5번 금고가 개방되었습니다.")
 
 def trigger_search():
     st.session_state['do_kepco_search'] = True
@@ -372,13 +373,11 @@ def get_kakao_coord(address):
     except: pass
     return None, None
 
-# 💡 [핵심 광역 스캔 패치] 내가 찍은 좌표(lat, lon)를 기준으로 반경 20km 이내의 인프라를 모두 긁어옵니다.
 def get_all_nearby_facilities(lat, lon, radius=20000):
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
     url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
     facilities = {}
     
-    # 변전소, 전력소, 변환소를 20km 반경 내에서 모두 융단폭격 검색
     for kw in ["변전소", "전력소", "변환소"]:
         try:
             res = requests.get(url_kw, headers=headers, params={"query": kw, "y": lat, "x": lon, "radius": radius}, timeout=5).json()
@@ -388,7 +387,6 @@ def get_all_nearby_facilities(lat, lon, radius=20000):
         except: pass
     return facilities
 
-# 혹시 20km 밖에 있는 특정 관할 변전소가 있을 경우를 대비한 단건 스캐너 유지
 def get_substation_coord(subst_name, region_hint):
     headers = {"Authorization": f"KakaoAK {KAKAO_KEY}"}
     url_kw = "https://dapi.kakao.com/v2/local/search/keyword.json"
@@ -414,6 +412,86 @@ def get_image_base64():
                     return f"data:{mime_type};base64,{b64_string}"
         return ""
     except: return ""
+
+# ==========================================
+# ☀️ 4부: 730W 용량 및 PVGIS 계절별 일조량 계산 함수
+# ==========================================
+def calculate_max_capacity(area_m2, usable_pct, lat_deg, tilt_deg, mod_w, mod_len, mod_wid):
+    """위도별 동지 태양고도를 반영하여 모듈 간 음영 이격거리(Pitch)와 최대 설치 가능 용량(kW)을 계산합니다."""
+    winter_noon_altitude = 90.0 - lat_deg - 23.45
+    effective_sun_angle = max(15.0, winter_noon_altitude * 0.72)
+    
+    tilt_rad = math.radians(tilt_deg)
+    sun_rad = math.radians(effective_sun_angle)
+    
+    pitch_ratio = math.cos(tilt_rad) + (math.sin(tilt_rad) / math.tan(sun_rad))
+    
+    single_module_area = mod_len * mod_wid
+    ground_footprint_per_module = (mod_len * pitch_ratio) * (mod_wid + 0.02)
+    
+    effective_land_m2 = area_m2 * (usable_pct / 100.0)
+    
+    max_modules = int(effective_land_m2 // ground_footprint_per_module)
+    max_capacity_kw = round((max_modules * mod_w) / 1000.0, 2)
+    
+    py_per_100kw = (area_m2 / 3.305785) / (max_capacity_kw / 100.0) if max_capacity_kw > 0 else 0
+    
+    return {
+        "max_modules": max_modules,
+        "max_capacity_kw": max_capacity_kw,
+        "pitch_ratio": round(pitch_ratio, 2),
+        "ground_footprint_per_module": round(ground_footprint_per_module, 2),
+        "single_module_area": round(single_module_area, 2),
+        "effective_land_m2": round(effective_land_m2, 1),
+        "py_per_100kw": round(py_per_100kw, 1)
+    }
+
+@st.cache_data(show_spinner=False)
+def get_seasonal_solar_generation(lat, lon, peakpower_kw, angle, loss):
+    """산출된 최대 설비 용량(kW)을 바탕으로 계절별 일사량, 발전시간, 발전량을 가져옵니다."""
+    url = "https://re.jrc.ec.europa.eu/api/v5_2/PVcalc"
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "peakpower": peakpower_kw,
+        "loss": loss,
+        "mountingplace": "free",
+        "angle": angle,
+        "aspect": 0,  # 정남향 기준
+        "outputformat": "json"
+    }
+    
+    response = requests.get(url, params=params, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+    
+    monthly_list = data["outputs"]["monthly"]["fixed"]
+    df = pd.DataFrame(monthly_list)
+    
+    df["일평균_발전시간_hr"] = df["E_d"] / peakpower_kw
+    
+    season_map = {
+        3: "🌸 봄 (3~5월)", 4: "🌸 봄 (3~5월)", 5: "🌸 봄 (3~5월)",
+        6: "☀️ 여름 (6~8월)", 7: "☀️ 여름 (6~8월)", 8: "☀️ 여름 (6~8월)",
+        9: "🍁 가을 (9~11월)", 10: "🍁 가을 (9~11월)", 11: "🍁 가을 (9~11월)",
+        12: "❄️ 겨울 (12~2월)", 1: "❄️ 겨울 (12~2월)", 2: "❄️ 겨울 (12~2월)"
+    }
+    df["계절"] = df["month"].map(season_map)
+    
+    season_order = ["🌸 봄 (3~5월)", "☀️ 여름 (6~8월)", "🍁 가을 (9~11월)", "❄️ 겨울 (12~2월)"]
+    df["계절"] = pd.Categorical(df["계절"], categories=season_order, ordered=True)
+    
+    seasonal_df = df.groupby("계절", observed=True).agg(
+        하루_경사면_일사량=("H(i)_d", "mean"),
+        하루_순수_발전시간=("일평균_발전시간_hr", "mean"),
+        하루_평균_발전량_kWh=("E_d", "mean"),
+        계절_총_발전량_MWh=("E_m", lambda x: x.sum() / 1000.0)
+    ).reset_index()
+    
+    annual_total_mwh = df["E_m"].sum() / 1000.0
+    annual_avg_hr = (df["E_m"].sum() / 365.0) / peakpower_kw
+    
+    return seasonal_df.round(2), df.round(2), round(annual_total_mwh, 2), round(annual_avg_hr, 2)
 
 # ==========================================
 # 🖥️ 앱 화면 구성 시작
@@ -447,14 +525,16 @@ st.markdown("---")
 sec2_container = st.container()
 st.markdown("---")
 sec3_container = st.container()
-sec4_container = st.container()
+st.markdown("---")
+sec4_solar_container = st.container()
+sec5_admin_container = st.container()
 
 # ---------------------------------------------------------
-# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회
+# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 (최우선 실행)
 # ---------------------------------------------------------
 with sec2_container:
     st.header("🎯 2. 상세 주소 실시간 1건 조회 (한전 여유용량 확인)")
-    st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다. (조회 시 아래 3번 지도가 자동 완성됩니다)")
+    st.markdown("신주소(도로명)를 넣으셔도 **구주소(지번)로 자동 변환**하여 주변 10개 번지까지 지능적으로 탐색합니다. (조회 시 1번 랭킹, 3번 지도, 4번 일조량 계산기가 자동 연동됩니다)")
 
     df_regions = get_region_codes()
     if df_regions.empty:
@@ -516,6 +596,14 @@ with sec2_container:
                     st.stop()
 
             st.session_state['auto_map_address'] = auto_address
+            
+            # 💡 4번 태양광 계산기에 주소와 위·경도를 즉시 연동!
+            st.session_state['solar_addr_memo'] = auto_address
+            s_lat, s_lon = get_kakao_coord(auto_address)
+            if s_lat is not None and s_lon is not None:
+                st.session_state['solar_lat'] = float(s_lat)
+                st.session_state['solar_lon'] = float(s_lon)
+
             sync_ranking_dropdown(rt_sido, rt_sigg, df_gs)
 
             raw_data, msg = smart_fetch_kepco(target_metroCd, target_cityCd, in_lidong.strip(), in_li.strip(), in_jibun.strip())
@@ -584,12 +672,17 @@ with sec3_container:
 
     if search_addr_map:
         with st.spinner("해당 지번의 위성지도와 주변 전력 인프라 위치를 추적 중입니다..."):
-            lat, lon = get_kakao_coord(search_addr_map)
+            lat_map, lon_map = get_kakao_coord(search_addr_map)
             
-            if lat is not None:
+            if lat_map is not None:
+                # 3번에서 직접 지도를 검색했을 때도 4번 일조량 계산기 좌표 업데이트
+                st.session_state['solar_addr_memo'] = search_addr_map
+                st.session_state['solar_lat'] = float(lat_map)
+                st.session_state['solar_lon'] = float(lon_map)
+
                 has_jibun = bool(re.search(r'\d', search_addr_map))
-                start_zoom = 13 # 주변 20km 변전소를 한눈에 보기 위해 줌을 살짝 풀어서 렌더링
-                m = folium.Map(location=[lat, lon], zoom_start=start_zoom, max_zoom=22, tiles=None)
+                start_zoom = 13
+                m = folium.Map(location=[lat_map, lon_map], zoom_start=start_zoom, max_zoom=22, tiles=None)
 
                 folium.TileLayer(
                     tiles=f'https://api.vworld.kr/req/wmts/1.0.0/{VWORLD_KEY}/Satellite/{{z}}/{{y}}/{{x}}.jpeg',
@@ -627,11 +720,9 @@ with sec3_container:
                         show=True
                     ).add_to(m)
 
-                # 📍 타겟 지역 핀 (빨간색)
-                folium.Marker([lat, lon], popup=f"<b>{search_addr_map}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
+                folium.Marker([lat_map, lon_map], popup=f"<b>{search_addr_map}</b>", icon=folium.Icon(color='red', icon='info-sign')).add_to(m)
                 
-                # 💡 [핵심] 반경 20km 이내의 모든 변전소/전력소/변환소 광역 탐색 (파란색 번개)
-                nearby_facilities = get_all_nearby_facilities(lat, lon, radius=20000)
+                nearby_facilities = get_all_nearby_facilities(lat_map, lon_map, radius=20000)
                 for f_name, (f_lat, f_lon) in nearby_facilities.items():
                     folium.Marker(
                         [f_lat, f_lon], 
@@ -640,14 +731,12 @@ with sec3_container:
                         icon=folium.Icon(color='blue', icon='bolt', prefix='fa')
                     ).add_to(m)
                 
-                # 💡 한전에서 콕 집어준 관할 변전소가 반경 밖에 있을 경우를 대비한 2차 탐색 (보라색 번개)
                 found_substations = st.session_state.get('found_substations', [])
                 region_hint = " ".join(search_addr_map.split()[:2]) if search_addr_map else ""
                 
                 for sub_name in found_substations:
                     if str(sub_name).strip() and str(sub_name).strip() != "nan":
                         clean_sub = re.sub(r'(S/S|s/s|변전소|전력소)', '', str(sub_name)).strip()
-                        # 이미 파란색으로 찍힌 주변 변전소 명칭에 이 관할 변전소가 없으면 추가로 찍음
                         if not any(clean_sub in k for k in nearby_facilities.keys()):
                             sub_lat, sub_lon = get_substation_coord(str(sub_name), region_hint)
                             if sub_lat is not None:
@@ -659,16 +748,148 @@ with sec3_container:
                                 ).add_to(m)
 
                 folium.LayerControl(position='topright').add_to(m)
-                st_folium(m, width=1300, height=750, returned_objects=[], key=f"wms_map_{lat}_{lon}")
+                st_folium(m, width=1300, height=750, returned_objects=[], key=f"wms_map_{lat_map}_{lon_map}")
             else:
                 st.error("⚠️ 주소를 변환할 수 없어 지도를 띄우지 못했습니다.")
 
 # ---------------------------------------------------------
-# 📚 4. 나의 관심 주소 보관함 (관리자 전용 구글 시트 연동)
+# ☀️ 4. 토지 평수 기반 730W 최대 설치용량 및 계절별 일조량 자동 계산기
 # ---------------------------------------------------------
-with sec4_container:
+with sec4_solar_container:
+    st.header("☀️ 4. 토지 평수 기반 730W 최대 설치용량 및 계절별 일조량 자동 계산기")
+    st.markdown("위 2번·3번에서 검색한 지번의 **위치(위·경도)**가 자동 연동되며, **토지 면적(평)**을 입력하면 최신 **730W 양면형 모듈 최대 설비용량(kW)**과 **계절별 예상 발전량**을 원스톱으로 산출합니다.")
+
+    # 세션 초기값 세팅 (기본값: 경북 영주)
+    if 'solar_addr_memo' not in st.session_state:
+        st.session_state['solar_addr_memo'] = "경북 영주시 안정면 일원"
+    if 'solar_lat' not in st.session_state:
+        st.session_state['solar_lat'] = 36.8057
+    if 'solar_lon' not in st.session_state:
+        st.session_state['solar_lon'] = 128.6240
+
+    st.subheader("1️⃣ 토지 정보 및 730W 어레이 설계 조건 입력")
+
+    scol1, scol2, scol3, scol4 = st.columns(4)
+
+    with scol1:
+        address_memo = st.text_input("검토 대상 지번 (검색 시 자동 연동)", key="solar_addr_memo")
+        input_unit = st.radio("면적 입력 단위", ["평 (py)", "제곱미터 (㎡)"], horizontal=True)
+        if input_unit == "평 (py)":
+            area_py = st.number_input("토지 면적 (평)", value=1200.0, min_value=10.0, step=50.0)
+            area_m2 = area_py * 3.305785
+            st.caption(f"환산 면적: **{area_m2:,.1f} ㎡**")
+        else:
+            area_m2 = st.number_input("토지 면적 (㎡)", value=3967.0, min_value=33.0, step=100.0)
+            area_py = area_m2 / 3.305785
+            st.caption(f"환산 면적: **{area_py:,.1f} 평**")
+
+    with scol2:
+        lat_solar = st.number_input("위도 (Latitude - 자동연동)", format="%.4f", key="solar_lat", help="경북 영주: 36.8057 / 김천: 36.1398 / 예천: 36.6577")
+        lon_solar = st.number_input("경도 (Longitude - 자동연동)", format="%.4f", key="solar_lon", help="경북 영주: 128.6240 / 김천: 128.1136 / 예천: 128.4528")
+        usable_ratio = st.slider(
+            "토지 유효 활용률 (%)",
+            min_value=40, max_value=80, value=68, step=1,
+            help="펜스 이격, 배수로, 작업 통로, 수배전반 자리 및 토지 모양(부정형 여부)을 감안한 실제 어레이 배치 가능 비율입니다. (네모 반듯한 땅: 68~72%, 모양이 꺾인 땅: 55~62%)"
+        )
+
+    with scol3:
+        module_watt = st.number_input("모듈 단일 출력 (W)", value=730, step=5, help="최신 N-Type 대면적 양면모듈 730W 기본 세팅")
+        module_length = st.number_input("모듈 세로 길이 (m)", value=2.384, format="%.3f", help="730W급 표준 규격: 2,384mm")
+        module_width = st.number_input("모듈 가로 폭 (m)", value=1.303, format="%.3f", help="730W급 표준 규격: 1,303mm")
+
+    with scol4:
+        tilt_angle = st.number_input("모듈 설치 경사각 (도)", value=25, min_value=10, max_value=40)
+        stack_rows = st.selectbox("어레이 단수 구성 (세로 기준)", [2, 3, 1], index=0, help="보통 2단(2P) 또는 3단으로 구조물을 구성합니다.")
+        loss_rate = st.number_input("시스템 종합 손실률 (%)", value=12.0, min_value=5.0, max_value=25.0, step=0.5, help="인버터 효율, 케이블 손실, 오염 등 (양면형 보너스 감안 시 11~13% 권장)")
+
+    cap_result = calculate_max_capacity(
+        area_m2, usable_ratio, lat_solar, tilt_angle, module_watt, module_length, module_width
+    )
+
+    st.divider()
+    st.subheader(f"2️⃣ [{address_memo}] 730W 패널 기준 최대 발전소 용량 산출 결과")
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(
+        label="⚡ 최대 설치 가능 설비용량",
+        value=f"{cap_result['max_capacity_kw']:,.2f} kW",
+        delta=f"100kW당 약 {cap_result['py_per_100kw']}평 소요"
+    )
+    m2.metric(
+        label=f"🟦 {module_watt}W 모듈 총 설치 매수",
+        value=f"{cap_result['max_modules']:,} 장",
+        delta=f"모듈 1장 면적 {cap_result['single_module_area']}㎡"
+    )
+    m3.metric(
+        label="📐 동지 무음영 이격 배수 (Pitch)",
+        value=f"모듈 길이의 {cap_result['pitch_ratio']} 배",
+        delta=f"위도 {lat_solar:.2f}° · 경사각 {tilt_angle}° 반영"
+    )
+    m4.metric(
+        label="🚜 실제 어레이 배치 유효 면적",
+        value=f"{cap_result['effective_land_m2']:,.0f} ㎡",
+        delta=f"전체 {area_py:,.0f}평 중 {usable_ratio}% 활용"
+    )
+
+    if cap_result["max_capacity_kw"] >= 500:
+        st.info(
+            f"💡 **사업 구조 팁:** 현재 토지에는 최대 **{cap_result['max_capacity_kw']:,.1f} kW**까지 배치가 가능합니다. "
+            f"소규모 전력중개시장 기준이나 개발행위·직접전력거래(PPA)·분할 사업 구도에 맞춰 **495kW 단위** 또는 **300~400kW + 잔여부지** 형태로 설계 여유를 두는 것을 추천합니다."
+        )
+    elif cap_result["max_capacity_kw"] >= 100:
+        st.info(
+            f"💡 **사업 구조 팁:** 최대 **{cap_result['max_capacity_kw']:,.1f} kW** 설치가 가능한 알짜 부지입니다. "
+            f"위 2번 한전 조회 결과에서 **배전선로 여유용량이 {math.ceil(cap_result['max_capacity_kw'])} kW 이상** 남아있는지 바로 대조해 보세요."
+        )
+
+    st.divider()
+    st.subheader(f"3️⃣ 산출 용량({cap_result['max_capacity_kw']} kW) 기준 계절별 하루 일조량 및 발전량")
+
+    if cap_result["max_capacity_kw"] > 0:
+        with st.spinner("해당 좌표의 위성 일사량 및 산악 지형 음영 데이터를 계산 중입니다..."):
+            try:
+                seasonal_df, monthly_df, annual_mwh, annual_hr = get_seasonal_solar_generation(
+                    lat_solar, lon_solar, cap_result["max_capacity_kw"], tilt_angle, loss_rate
+                )
+                
+                k1, k2 = st.columns(2)
+                k1.success(f"⏱️ **연평균 하루 순수 발전시간:** **{annual_hr:.2f} 시간/일** (주변 산 그림자 및 온도 손실 차감 완료)")
+                k2.success(f"🔋 **연간 총 예상 발전량:** **{annual_mwh:,.1f} MWh/년** ({annual_mwh * 1000:,.0f} kWh/년)")
+                
+                st.dataframe(
+                    seasonal_df.rename(columns={
+                        "계절": "계절 구분",
+                        "하루_경사면_일사량": "하루 평균 일조/일사량 (kWh/m²/일)",
+                        "하루_순수_발전시간": "하루 실제 발전시간 (시간/일)",
+                        "하루_평균_발전량_kWh": "하루 예상 발전량 (kWh/일)",
+                        "계절_총_발전량_MWh": "계절(3개월) 누적 발전량 (MWh)"
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                with st.expander("📅 1월~12월 월별 상세 일사량 및 발전량 표 열기"):
+                    st.dataframe(
+                        monthly_df[["month", "H(i)_d", "일평균_발전시간_hr", "E_d", "E_m"]].rename(columns={
+                            "month": "월 (Month)",
+                            "H(i)_d": "일평균 경사면 일사량 (kWh/m²)",
+                            "일평균_발전시간_hr": "일평균 발전시간 (hr)",
+                            "E_d": "하루 발전량 (kWh)",
+                            "E_m": "월간 총 발전량 (kWh)"
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+            except Exception as e:
+                st.error(f"일사량 API 통신 중 오류가 발생했습니다: {e}")
+
+# ---------------------------------------------------------
+# 📚 5. 나의 관심 주소 보관함 (관리자 전용 구글 시트 연동)
+# ---------------------------------------------------------
+with sec5_admin_container:
     if IS_ADMIN:
-        st.header("⭐ 4. 알짜배기 관심 주소 자동 수집 보관함 (관리자 전용 구글 시트)")
+        st.markdown("---")
+        st.header("⭐ 5. 알짜배기 관심 주소 자동 수집 보관함 (관리자 전용 구글 시트)")
         st.markdown("일반 사용자들이 검색한 주소 중, **'🟢 가능' 상태가 뜨는 곳만 은밀하게 구글 시트('시트2')에 자동 저장**되어 영구 보존됩니다.")
 
         bookmarks = load_bookmarks()
@@ -705,7 +926,7 @@ with sec4_container:
                                 
                             if raw_data:
                                 display_kepco_dataframe(raw_data)
-                                st.success(f"✅ 위 3번 지도의 검색창에 **'{bm.get('full_address', '')}'**를 입력하시면 즉시 지적도를 확인하실 수 있습니다!")
+                                st.success(f"✅ 위 3번 지도의 검색창에 **'{bm.get('full_address', '')}'**를 입력하시면 즉시 지적도와 일조량을 확인하실 수 있습니다!")
                             else:
                                 st.warning("⚠️ 해당 지역의 한전 데이터가 없습니다.")
                 st.markdown("---")
