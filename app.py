@@ -414,7 +414,7 @@ def get_image_base64():
     except: return ""
 
 # ==========================================
-# ☀️ 4부: 730W 용량 및 PVGIS 계절별 일조량 계산 함수
+# ☀️ 4부: 730W 용량 및 PVGIS 계절별 일조량·수익금 계산 함수
 # ==========================================
 def calculate_max_capacity(area_m2, usable_pct, lat_deg, tilt_deg, mod_w, mod_len, mod_wid):
     """위도별 동지 태양고도를 반영하여 모듈 간 음영 이격거리(Pitch)와 최대 설치 가능 용량(kW)을 계산합니다."""
@@ -597,7 +597,7 @@ with sec2_container:
 
             st.session_state['auto_map_address'] = auto_address
             
-            # 💡 4번 태양광 계산기에 주소와 위·경도를 즉시 연동!
+            # 4번 태양광 계산기에 주소 및 위·경도 연동
             st.session_state['solar_addr_memo'] = auto_address
             s_lat, s_lon = get_kakao_coord(auto_address)
             if s_lat is not None and s_lon is not None:
@@ -675,7 +675,6 @@ with sec3_container:
             lat_map, lon_map = get_kakao_coord(search_addr_map)
             
             if lat_map is not None:
-                # 3번에서 직접 지도를 검색했을 때도 4번 일조량 계산기 좌표 업데이트
                 st.session_state['solar_addr_memo'] = search_addr_map
                 st.session_state['solar_lat'] = float(lat_map)
                 st.session_state['solar_lon'] = float(lon_map)
@@ -753,13 +752,12 @@ with sec3_container:
                 st.error("⚠️ 주소를 변환할 수 없어 지도를 띄우지 못했습니다.")
 
 # ---------------------------------------------------------
-# ☀️ 4. 토지 평수 기반 730W 최대 설치용량 및 계절별 일조량 자동 계산기
+# ☀️ 4. 태양광 730W 용량 및 계절별 일조량·월별 예상 수익금 통합 분석기 (커스텀 변경 기능 추가)
 # ---------------------------------------------------------
 with sec4_solar_container:
-    st.header("☀️ 4. 토지 평수 기반 730W 최대 설치용량 및 계절별 일조량 자동 계산기")
-    st.markdown("위 2번·3번에서 검색한 지번의 **위치(위·경도)**가 자동 연동되며, **토지 면적(평)**을 입력하면 최신 **730W 양면형 모듈 최대 설비용량(kW)**과 **계절별 예상 발전량**을 원스톱으로 산출합니다.")
+    st.header("☀️ 4. 토지 평수 기반 730W 최대 설치용량 및 계절별 일조량·월별 수익금 분석기")
+    st.markdown("위 2번·3번에서 검색한 지번의 **위치(위·경도)**가 자동 연동되며, **토지 면적(평)**과 **설치 용량·모듈 수수**를 자유롭게 커스텀하여 발전량과 **예상 월수익금**을 산출할 수 있습니다.")
 
-    # 세션 초기값 세팅 (기본값: 경북 영주)
     if 'solar_addr_memo' not in st.session_state:
         st.session_state['solar_addr_memo'] = "경북 영주시 안정면 일원"
     if 'solar_lat' not in st.session_state:
@@ -784,98 +782,107 @@ with sec4_solar_container:
             st.caption(f"환산 면적: **{area_py:,.1f} 평**")
 
     with scol2:
-        lat_solar = st.number_input("위도 (Latitude - 자동연동)", format="%.4f", key="solar_lat", help="경북 영주: 36.8057 / 김천: 36.1398 / 예천: 36.6577")
-        lon_solar = st.number_input("경도 (Longitude - 자동연동)", format="%.4f", key="solar_lon", help="경북 영주: 128.6240 / 김천: 128.1136 / 예천: 128.4528")
+        lat_solar = st.number_input("위도 (Latitude - 자동연동)", format="%.4f", key="solar_lat")
+        lon_solar = st.number_input("경도 (Longitude - 자동연동)", format="%.4f", key="solar_lon")
         usable_ratio = st.slider(
             "토지 유효 활용률 (%)",
             min_value=40, max_value=80, value=68, step=1,
-            help="펜스 이격, 배수로, 작업 통로, 수배전반 자리 및 토지 모양(부정형 여부)을 감안한 실제 어레이 배치 가능 비율입니다. (네모 반듯한 땅: 68~72%, 모양이 꺾인 땅: 55~62%)"
+            help="펜스 이격, 배수로, 작업 통로, 수배전반 자리 및 토지 모양(부정형 여부)을 감안한 실제 어레이 배치 가능 비율입니다."
         )
 
     with scol3:
         module_watt = st.number_input("모듈 단일 출력 (W)", value=730, step=5, help="최신 N-Type 대면적 양면모듈 730W 기본 세팅")
-        module_length = st.number_input("모듈 세로 길이 (m)", value=2.384, format="%.3f", help="730W급 표준 규격: 2,384mm")
-        module_width = st.number_input("모듈 가로 폭 (m)", value=1.303, format="%.3f", help="730W급 표준 규격: 1,303mm")
+        module_length = st.number_input("모듈 세로 길이 (m)", value=2.384, format="%.3f")
+        module_width = st.number_input("모듈 가로 폭 (m)", value=1.303, format="%.3f")
 
     with scol4:
         tilt_angle = st.number_input("모듈 설치 경사각 (도)", value=25, min_value=10, max_value=40)
-        stack_rows = st.selectbox("어레이 단수 구성 (세로 기준)", [2, 3, 1], index=0, help="보통 2단(2P) 또는 3단으로 구조물을 구성합니다.")
-        loss_rate = st.number_input("시스템 종합 손실률 (%)", value=12.0, min_value=5.0, max_value=25.0, step=0.5, help="인버터 효율, 케이블 손실, 오염 등 (양면형 보너스 감안 시 11~13% 권장)")
+        loss_rate = st.number_input("시스템 종합 손실률 (%)", value=12.0, min_value=5.0, max_value=25.0, step=0.5)
+        # 💡 [핵심 추가] 전력 판매 단가 입력 (SMP + REC 합산 단가, 원/kWh)
+        unit_price_krw = st.number_input("예상 전력 판매 단가 (SMP+REC, 원/kWh)", value=160, step=5, help="평균적인 SMP와 REC 현물/고정가격 계약 합산 단가 (기본 160원 설정)")
 
-    cap_result = calculate_max_capacity(
+    # 기본 최대 용량 및 모듈 매수 계산
+    auto_cap_result = calculate_max_capacity(
         area_m2, usable_ratio, lat_solar, tilt_angle, module_watt, module_length, module_width
     )
 
     st.divider()
-    st.subheader(f"2️⃣ [{address_memo}] 730W 패널 기준 최대 발전소 용량 산출 결과")
+    st.subheader("2️⃣ 설계 용량 및 모듈 수량 커스텀 조정 (수정 가능)")
+    st.markdown("자동 산출된 최대 기준값을 참고하되, **설비 용량(kW)**이나 **설치 모듈 매수**를 직접 변경하여 시뮬레이션해 보세요.")
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric(
-        label="⚡ 최대 설치 가능 설비용량",
-        value=f"{cap_result['max_capacity_kw']:,.2f} kW",
-        delta=f"100kW당 약 {cap_result['py_per_100kw']}평 소요"
-    )
-    m2.metric(
-        label=f"🟦 {module_watt}W 모듈 총 설치 매수",
-        value=f"{cap_result['max_modules']:,} 장",
-        delta=f"모듈 1장 면적 {cap_result['single_module_area']}㎡"
-    )
-    m3.metric(
-        label="📐 동지 무음영 이격 배수 (Pitch)",
-        value=f"모듈 길이의 {cap_result['pitch_ratio']} 배",
-        delta=f"위도 {lat_solar:.2f}° · 경사각 {tilt_angle}° 반영"
-    )
-    m4.metric(
-        label="🚜 실제 어레이 배치 유효 면적",
-        value=f"{cap_result['effective_land_m2']:,.0f} ㎡",
-        delta=f"전체 {area_py:,.0f}평 중 {usable_ratio}% 활용"
-    )
-
-    if cap_result["max_capacity_kw"] >= 500:
-        st.info(
-            f"💡 **사업 구조 팁:** 현재 토지에는 최대 **{cap_result['max_capacity_kw']:,.1f} kW**까지 배치가 가능합니다. "
-            f"소규모 전력중개시장 기준이나 개발행위·직접전력거래(PPA)·분할 사업 구도에 맞춰 **495kW 단위** 또는 **300~400kW + 잔여부지** 형태로 설계 여유를 두는 것을 추천합니다."
+    ccol1, ccol2 = st.columns(2)
+    with ccol1:
+        # 사용자 커스텀 설비 용량 입력 (기본값은 자동 산출된 최대 용량)
+        custom_capacity_kw = st.number_input(
+            "설비 목표 용량 (kW) - 직접 수정 가능",
+            value=float(auto_cap_result['max_capacity_kw']),
+            min_value=1.0,
+            step=10.0,
+            format="%.2f",
+            help="자동 산출된 용량보다 작거나 크게 자유롭게 입력하여 수지 분석을 다르게 시뮬레이션할 수 있습니다."
         )
-    elif cap_result["max_capacity_kw"] >= 100:
-        st.info(
-            f"💡 **사업 구조 팁:** 최대 **{cap_result['max_capacity_kw']:,.1f} kW** 설치가 가능한 알짜 부지입니다. "
-            f"위 2번 한전 조회 결과에서 **배전선로 여유용량이 {math.ceil(cap_result['max_capacity_kw'])} kW 이상** 남아있는지 바로 대조해 보세요."
+    with ccol2:
+        # 용량 변화에 따른 동적 모듈 매수 역산
+        derived_modules = int((custom_capacity_kw * 1000.0) / module_watt)
+        st.metric(
+            label="🟦 적용되는 모듈 설치 매수",
+            value=f"{derived_modules:,} 장",
+            delta=f"선택 용량 {custom_capacity_kw:,.2f} kW 기준"
         )
 
+    # 3부 발전량 산출 시 사용자 커스텀 용량(custom_capacity_kw)을 최종 반영
     st.divider()
-    st.subheader(f"3️⃣ 산출 용량({cap_result['max_capacity_kw']} kW) 기준 계절별 하루 일조량 및 발전량")
+    st.subheader(f"3️⃣ 최종 적용 용량({custom_capacity_kw:,.2f} kW) 기준 계절별 일조량 및 월별 예상 수익금")
 
-    if cap_result["max_capacity_kw"] > 0:
+    if custom_capacity_kw > 0:
         with st.spinner("해당 좌표의 위성 일사량 및 산악 지형 음영 데이터를 계산 중입니다..."):
             try:
                 seasonal_df, monthly_df, annual_mwh, annual_hr = get_seasonal_solar_generation(
-                    lat_solar, lon_solar, cap_result["max_capacity_kw"], tilt_angle, loss_rate
+                    lat_solar, lon_solar, custom_capacity_kw, tilt_angle, loss_rate
                 )
                 
-                k1, k2 = st.columns(2)
-                k1.success(f"⏱️ **연평균 하루 순수 발전시간:** **{annual_hr:.2f} 시간/일** (주변 산 그림자 및 온도 손실 차감 완료)")
-                k2.success(f"🔋 **연간 총 예상 발전량:** **{annual_mwh:,.1f} MWh/년** ({annual_mwh * 1000:,.0f} kWh/년)")
+                # 💡 월별 예상 수익금 계산 추가 (월간 발전량 kWh * 판매 단가 원)
+                monthly_df["월별_예상수익금_원"] = monthly_df["E_m"] * unit_price_krw
+                annual_total_revenue = monthly_df["월별_예상수익금_원"].sum()
+                monthly_avg_revenue = annual_total_revenue / 12.0
+
+                k1, k2, k3 = st.columns(3)
+                k1.success(f"⏱️ **연평균 하루 순수 발전시간:** **{annual_hr:.2f} 시간/일**")
+                k2.success(f"🔋 **연간 총 예상 발전량:** **{annual_mwh:,.1f} MWh/년**")
+                k3.success(f"💰 **월 평균 예상 수익금:** **{monthly_avg_revenue:,.0f} 원/월** (연 약 {annual_total_revenue:,.0f}원)")
+                
+                # 계절별 테이블에 수익금 컬럼 추가 합성
+                seasonal_revenue_mwh = monthly_df.groupby(monthly_df["month"].map(lambda m: {
+                    3: "🌸 봄 (3~5월)", 4: "🌸 봄 (3~5월)", 5: "🌸 봄 (3~5월)",
+                    6: "☀️ 여름 (6~8월)", 7: "☀️ 여름 (6~8월)", 8: "☀️ 여름 (6~8월)",
+                    9: "🍁 가을 (9~11월)", 10: "🍁 가을 (9~11월)", 11: "🍁 가을 (9~11월)",
+                    12: "❄️ 겨울 (12~2월)", 1: "❄️ 겨울 (12~2월)", 2: "❄️ 겨울 (12~2월)"
+                }[m]), observed=True)["월별_예상수익금_원"].sum().reset_index()
+                
+                seasonal_merged = pd.merge(seasonal_df, seasonal_revenue_mwh, on="계절")
                 
                 st.dataframe(
-                    seasonal_df.rename(columns={
+                    seasonal_merged.rename(columns={
                         "계절": "계절 구분",
                         "하루_경사면_일사량": "하루 평균 일조/일사량 (kWh/m²/일)",
                         "하루_순수_발전시간": "하루 실제 발전시간 (시간/일)",
                         "하루_평균_발전량_kWh": "하루 예상 발전량 (kWh/일)",
-                        "계절_총_발전량_MWh": "계절(3개월) 누적 발전량 (MWh)"
+                        "계절_총_발전량_MWh": "계절 누적 발전량 (MWh)",
+                        "월별_예상수익금_원": "계절 누적 예상 수익금 (원)"
                     }),
                     use_container_width=True,
                     hide_index=True
                 )
                 
-                with st.expander("📅 1월~12월 월별 상세 일사량 및 발전량 표 열기"):
+                with st.expander("📅 1월~12월 월별 상세 발전량 및 평균 수익금 표 열기"):
                     st.dataframe(
-                        monthly_df[["month", "H(i)_d", "일평균_발전시간_hr", "E_d", "E_m"]].rename(columns={
+                        monthly_df[["month", "H(i)_d", "일평균_발전시간_hr", "E_d", "E_m", "월별_예상수익금_원"]].rename(columns={
                             "month": "월 (Month)",
                             "H(i)_d": "일평균 경사면 일사량 (kWh/m²)",
                             "일평균_발전시간_hr": "일평균 발전시간 (hr)",
                             "E_d": "하루 발전량 (kWh)",
-                            "E_m": "월간 총 발전량 (kWh)"
+                            "E_m": "월간 총 발전량 (kWh)",
+                            "월별_예상수익금_원": "월별 예상 수익금 (원)"
                         }),
                         use_container_width=True,
                         hide_index=True
@@ -926,7 +933,7 @@ with sec5_admin_container:
                                 
                             if raw_data:
                                 display_kepco_dataframe(raw_data)
-                                st.success(f"✅ 위 3번 지도의 검색창에 **'{bm.get('full_address', '')}'**를 입력하시면 즉시 지적도와 일조량을 확인하실 수 있습니다!")
+                                st.success(f"✅ 위 3번 지도의 검색창에 **'{bm.get('full_address', '')}'**를 입력하시면 즉시 지적도와 일조량·수익금을 확인하실 수 있습니다!")
                             else:
                                 st.warning("⚠️ 해당 지역의 한전 데이터가 없습니다.")
                 st.markdown("---")
