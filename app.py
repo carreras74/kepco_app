@@ -414,7 +414,7 @@ def get_image_base64():
     except: return ""
 
 # ==========================================
-# ☀️ 4부: 730W 용량 및 PVGIS 계절별 일조량·수익금 계산 함수 (안전 강화 버전)
+# ☀️ 4부: 730W 용량 및 PVGIS 계절별 일조량·수익금 계산 함수 (에러 원천 방어 패치)
 # ==========================================
 def calculate_max_capacity(area_m2, usable_pct, lat_deg, tilt_deg, mod_w, mod_len, mod_wid):
     winter_noon_altitude = 90.0 - lat_deg - 23.45
@@ -474,17 +474,17 @@ def get_seasonal_solar_generation(lat, lon, peakpower_kw, angle, loss):
         9: "🍁 가을 (9~11월)", 10: "🍁 가을 (9~11월)", 11: "🍁 가을 (9~11월)",
         12: "❄️ 겨울 (12~2월)", 1: "❄️ 겨울 (12~2월)", 2: "❄️ 겨울 (12~2월)"
     }
-    df["계절구분명"] = df["month"].map(season_map)
+    df["계절"] = df["month"].map(season_map)
     
     season_order = ["🌸 봄 (3~5월)", "☀️ 여름 (6~8월)", "🍁 가을 (9~11월)", "❄️ 겨울 (12~2월)"]
-    df["계절구분명"] = pd.Categorical(df["계절구분명"], categories=season_order, ordered=True)
+    df["계절"] = pd.Categorical(df["계절"], categories=season_order, ordered=True)
     
-    seasonal_df = df.groupby("계절구분명", observed=True).agg(
+    seasonal_df = df.groupby("계절", observed=True).agg(
         하루_경사면_일사량=("H(i)_d", "mean"),
         하루_순수_발전시간=("일평균_발전시간_hr", "mean"),
         하루_평균_발전량_kWh=("E_d", "mean"),
         계절_총_발전량_MWh=("E_m", lambda x: x.sum() / 1000.0)
-    ).reset_index().rename(columns={"계절구분명": "계절"})
+    ).reset_index()
     
     annual_total_mwh = df["E_m"].sum() / 1000.0
     annual_avg_hr = (df["E_m"].sum() / 365.0) / peakpower_kw
@@ -842,14 +842,18 @@ with sec4_solar_container:
                 k2.success(f"🔋 **연간 총 예상 발전량:** **{annual_mwh:,.1f} MWh/년**")
                 k3.success(f"💰 **월 평균 예상 수익금:** **{monthly_avg_revenue:,.0f} 원/월** (연 약 {annual_total_revenue:,.0f}원)")
                 
-                seasonal_revenue_mwh = monthly_df.groupby(monthly_df["month"].map(lambda m: {
+                # 💡 안전한 계절별 수익금 매핑 및 병합 처리
+                season_map_func = lambda m: {
                     3: "🌸 봄 (3~5월)", 4: "🌸 봄 (3~5월)", 5: "🌸 봄 (3~5월)",
                     6: "☀️ 여름 (6~8월)", 7: "☀️ 여름 (6~8월)", 8: "☀️ 여름 (6~8월)",
                     9: "🍁 가을 (9~11월)", 10: "🍁 가을 (9~11월)", 11: "🍁 가을 (9~11월)",
                     12: "❄️ 겨울 (12~2월)", 1: "❄️ 겨울 (12~2월)", 2: "❄️ 겨울 (12~2월)"
-                }[m]), observed=True)["월별_예상수익금_원"].sum().reset_index().rename(columns={"index": "계절", "level_0": "계절"})
+                }.get(m, "기타")
+
+                monthly_df["계절"] = monthly_df["month"].map(season_map_func)
+                seasonal_revenue_mwh = monthly_df.groupby("계절", observed=True)["월별_예상수익금_원"].sum().reset_index()
                 
-                if "계절구분명" in seasonal_df.columns:
+                if "계절" not in seasonal_df.columns and "계절구분명" in seasonal_df.columns:
                     seasonal_df = seasonal_df.rename(columns={"계절구분명": "계절"})
 
                 seasonal_merged = pd.merge(seasonal_df, seasonal_revenue_mwh, on="계절", how="left")
