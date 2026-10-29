@@ -16,7 +16,7 @@ from datetime import datetime
 st.set_page_config(page_title="전국 송전여유용량 및 태양광 수지분석 APP", page_icon="⚡", layout="wide")
 
 # ==========================================
-# 💡 스크롤바 영구 고정 패치 (절대 사라지지 않는 붉은색 스크롤바)
+# 💡 스크롤바 영구 고정 패치
 # ==========================================
 st.markdown("""
     <style>
@@ -279,7 +279,7 @@ def display_kepco_dataframe(raw_data):
     st.dataframe(rt_df[["순위", "연계상태", "DL명(읍면동)", "DL 여유용량", "변압기 여유용량", "변전소 여유용량", "변전소명"]], use_container_width=True, hide_index=True)
     return rt_df
 
-def smart_fetch_kepco(metroCd, cityCd, lidong, li, jibun):
+def smart_fetch_kepco(metroCd, cityCd, lidong="", li="", jibun=""):
     raw_data = fetch_kepco_realtime(metroCd, cityCd, lidong, li, jibun)
     msg = None
     
@@ -414,10 +414,9 @@ def get_image_base64():
     except: return ""
 
 # ==========================================
-# ☀️ 4부: 730W 용량 및 PVGIS 계절별 일조량·수익금 계산 함수
+# ☀️ 4부: 730W 용량 및 PVGIS 계절별 일조량·수익금 계산 함수 (안전 강화 버전)
 # ==========================================
 def calculate_max_capacity(area_m2, usable_pct, lat_deg, tilt_deg, mod_w, mod_len, mod_wid):
-    """위도별 동지 태양고도를 반영하여 모듈 간 음영 이격거리(Pitch)와 최대 설치 가능 용량(kW)을 계산합니다."""
     winter_noon_altitude = 90.0 - lat_deg - 23.45
     effective_sun_angle = max(15.0, winter_noon_altitude * 0.72)
     
@@ -448,7 +447,6 @@ def calculate_max_capacity(area_m2, usable_pct, lat_deg, tilt_deg, mod_w, mod_le
 
 @st.cache_data(show_spinner=False)
 def get_seasonal_solar_generation(lat, lon, peakpower_kw, angle, loss):
-    """산출된 최대 설비 용량(kW)을 바탕으로 계절별 일사량, 발전시간, 발전량을 가져옵니다."""
     url = "https://re.jrc.ec.europa.eu/api/v5_2/PVcalc"
     params = {
         "lat": lat,
@@ -457,7 +455,7 @@ def get_seasonal_solar_generation(lat, lon, peakpower_kw, angle, loss):
         "loss": loss,
         "mountingplace": "free",
         "angle": angle,
-        "aspect": 0,  # 정남향 기준
+        "aspect": 0,
         "outputformat": "json"
     }
     
@@ -476,17 +474,17 @@ def get_seasonal_solar_generation(lat, lon, peakpower_kw, angle, loss):
         9: "🍁 가을 (9~11월)", 10: "🍁 가을 (9~11월)", 11: "🍁 가을 (9~11월)",
         12: "❄️ 겨울 (12~2월)", 1: "❄️ 겨울 (12~2월)", 2: "❄️ 겨울 (12~2월)"
     }
-    df["계절"] = df["month"].map(season_map)
+    df["계절구분명"] = df["month"].map(season_map)
     
     season_order = ["🌸 봄 (3~5월)", "☀️ 여름 (6~8월)", "🍁 가을 (9~11월)", "❄️ 겨울 (12~2월)"]
-    df["계절"] = pd.Categorical(df["계절"], categories=season_order, ordered=True)
+    df["계절구분명"] = pd.Categorical(df["계절구분명"], categories=season_order, ordered=True)
     
-    seasonal_df = df.groupby("계절", observed=True).agg(
+    seasonal_df = df.groupby("계절구분명", observed=True).agg(
         하루_경사면_일사량=("H(i)_d", "mean"),
         하루_순수_발전시간=("일평균_발전시간_hr", "mean"),
         하루_평균_발전량_kWh=("E_d", "mean"),
         계절_총_발전량_MWh=("E_m", lambda x: x.sum() / 1000.0)
-    ).reset_index()
+    ).reset_index().rename(columns={"계절구분명": "계절"})
     
     annual_total_mwh = df["E_m"].sum() / 1000.0
     annual_avg_hr = (df["E_m"].sum() / 365.0) / peakpower_kw
@@ -530,7 +528,7 @@ sec4_solar_container = st.container()
 sec5_admin_container = st.container()
 
 # ---------------------------------------------------------
-# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회 (최우선 실행)
+# 🎯 2. 한전 API 실시간 스마트 다이렉트 조회
 # ---------------------------------------------------------
 with sec2_container:
     st.header("🎯 2. 상세 주소 실시간 1건 조회 (한전 여유용량 확인)")
@@ -597,7 +595,6 @@ with sec2_container:
 
             st.session_state['auto_map_address'] = auto_address
             
-            # 4번 태양광 계산기에 주소 및 위·경도 연동
             st.session_state['solar_addr_memo'] = auto_address
             s_lat, s_lon = get_kakao_coord(auto_address)
             if s_lat is not None and s_lon is not None:
@@ -661,11 +658,11 @@ with sec1_container:
         st.warning("데이터를 불러오지 못했습니다. 로컬 PC에서 크롤러를 실행해 주세요.")
 
 # ---------------------------------------------------------
-# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱 (광역 스캔 적용)
+# 🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱
 # ---------------------------------------------------------
 with sec3_container:
     st.header("🗺️ 3. 카카오 x 브이월드 통합 경계 분석 앱")
-    st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 지적도가 완성**되며, 반경 **20km 이내의 모든 변전소/전력소(파란색 ⚡)가 함께 표시**됩니다.")
+    st.markdown("위 2번 항목에서 **검색 버튼을 누르는 순간 아래 지도에 자동으로 지적도가 완성**되며, 반경 **20km 이내의 모든 변전소/전력소(파란색 ⚡)가 함께 표시**됩니다.")
 
     default_map_addr = st.session_state.get('auto_map_address', "")
     search_addr_map = st.text_input("🔍 지도 주소 직접 검색 (2번에서 검색 시 자동 완성됨)", value=default_map_addr, placeholder="예: 김천시 아포읍 대성리 348")
@@ -752,11 +749,11 @@ with sec3_container:
                 st.error("⚠️ 주소를 변환할 수 없어 지도를 띄우지 못했습니다.")
 
 # ---------------------------------------------------------
-# ☀️ 4. 태양광 730W 용량 및 계절별 일조량·월별 예상 수익금 통합 분석기 (커스텀 변경 기능 추가)
+# ☀️ 4. 태양광 730W 용량 및 계절별 일조량·월별 예상 수익금 통합 분석기
 # ---------------------------------------------------------
 with sec4_solar_container:
     st.header("☀️ 4. 토지 평수 기반 730W 최대 설치용량 및 계절별 일조량·월별 수익금 분석기")
-    st.markdown("위 2번·3번에서 검색한 지번의 **위치(위·경도)**가 자동 연동되며, **토지 면적(평)**과 **설치 용량·모듈 수수**를 자유롭게 커스텀하여 발전량과 **예상 월수익금**을 산출할 수 있습니다.")
+    st.markdown("위 2번·3번에서 검색한 지번의 **위치(위·경도)**가 자동 연동되며, **토지 면적(평)**과 **설치 용량·모듈 수량**을 자유롭게 커스텀하여 발전량과 **예상 월수익금**을 산출할 수 있습니다.")
 
     if 'solar_addr_memo' not in st.session_state:
         st.session_state['solar_addr_memo'] = "경북 영주시 안정면 일원"
@@ -798,10 +795,8 @@ with sec4_solar_container:
     with scol4:
         tilt_angle = st.number_input("모듈 설치 경사각 (도)", value=25, min_value=10, max_value=40)
         loss_rate = st.number_input("시스템 종합 손실률 (%)", value=12.0, min_value=5.0, max_value=25.0, step=0.5)
-        # 💡 [핵심 추가] 전력 판매 단가 입력 (SMP + REC 합산 단가, 원/kWh)
         unit_price_krw = st.number_input("예상 전력 판매 단가 (SMP+REC, 원/kWh)", value=160, step=5, help="평균적인 SMP와 REC 현물/고정가격 계약 합산 단가 (기본 160원 설정)")
 
-    # 기본 최대 용량 및 모듈 매수 계산
     auto_cap_result = calculate_max_capacity(
         area_m2, usable_ratio, lat_solar, tilt_angle, module_watt, module_length, module_width
     )
@@ -812,7 +807,6 @@ with sec4_solar_container:
 
     ccol1, ccol2 = st.columns(2)
     with ccol1:
-        # 사용자 커스텀 설비 용량 입력 (기본값은 자동 산출된 최대 용량)
         custom_capacity_kw = st.number_input(
             "설비 목표 용량 (kW) - 직접 수정 가능",
             value=float(auto_cap_result['max_capacity_kw']),
@@ -822,7 +816,6 @@ with sec4_solar_container:
             help="자동 산출된 용량보다 작거나 크게 자유롭게 입력하여 수지 분석을 다르게 시뮬레이션할 수 있습니다."
         )
     with ccol2:
-        # 용량 변화에 따른 동적 모듈 매수 역산
         derived_modules = int((custom_capacity_kw * 1000.0) / module_watt)
         st.metric(
             label="🟦 적용되는 모듈 설치 매수",
@@ -830,7 +823,6 @@ with sec4_solar_container:
             delta=f"선택 용량 {custom_capacity_kw:,.2f} kW 기준"
         )
 
-    # 3부 발전량 산출 시 사용자 커스텀 용량(custom_capacity_kw)을 최종 반영
     st.divider()
     st.subheader(f"3️⃣ 최종 적용 용량({custom_capacity_kw:,.2f} kW) 기준 계절별 일조량 및 월별 예상 수익금")
 
@@ -841,7 +833,6 @@ with sec4_solar_container:
                     lat_solar, lon_solar, custom_capacity_kw, tilt_angle, loss_rate
                 )
                 
-                # 💡 월별 예상 수익금 계산 추가 (월간 발전량 kWh * 판매 단가 원)
                 monthly_df["월별_예상수익금_원"] = monthly_df["E_m"] * unit_price_krw
                 annual_total_revenue = monthly_df["월별_예상수익금_원"].sum()
                 monthly_avg_revenue = annual_total_revenue / 12.0
@@ -851,15 +842,17 @@ with sec4_solar_container:
                 k2.success(f"🔋 **연간 총 예상 발전량:** **{annual_mwh:,.1f} MWh/년**")
                 k3.success(f"💰 **월 평균 예상 수익금:** **{monthly_avg_revenue:,.0f} 원/월** (연 약 {annual_total_revenue:,.0f}원)")
                 
-                # 계절별 테이블에 수익금 컬럼 추가 합성
                 seasonal_revenue_mwh = monthly_df.groupby(monthly_df["month"].map(lambda m: {
                     3: "🌸 봄 (3~5월)", 4: "🌸 봄 (3~5월)", 5: "🌸 봄 (3~5월)",
                     6: "☀️ 여름 (6~8월)", 7: "☀️ 여름 (6~8월)", 8: "☀️ 여름 (6~8월)",
                     9: "🍁 가을 (9~11월)", 10: "🍁 가을 (9~11월)", 11: "🍁 가을 (9~11월)",
                     12: "❄️ 겨울 (12~2월)", 1: "❄️ 겨울 (12~2월)", 2: "❄️ 겨울 (12~2월)"
-                }[m]), observed=True)["월별_예상수익금_원"].sum().reset_index()
+                }[m]), observed=True)["월별_예상수익금_원"].sum().reset_index().rename(columns={"index": "계절", "level_0": "계절"})
                 
-                seasonal_merged = pd.merge(seasonal_df, seasonal_revenue_mwh, on="계절")
+                if "계절구분명" in seasonal_df.columns:
+                    seasonal_df = seasonal_df.rename(columns={"계절구분명": "계절"})
+
+                seasonal_merged = pd.merge(seasonal_df, seasonal_revenue_mwh, on="계절", how="left")
                 
                 st.dataframe(
                     seasonal_merged.rename(columns={
